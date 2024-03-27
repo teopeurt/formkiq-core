@@ -10,7 +10,7 @@ Parameters:
   Image:
     Type: String
     Description: Version of Typesense to deploy
-    Default: "typesense/typesense:0.23.1"
+    Default: "typesense/typesense:0.25.1"
     
   AppEnvironment:
     Type: String
@@ -38,15 +38,48 @@ Parameters:
   TypesenseApiKey:
     Type: String
     Description: TypeSense API Key
+    
+  TypesenseMemory:
+    Type: String
+    Description: The amount of memory used by Typesense Fargate Container function (GB)
+    Default: "1024"
+    AllowedValues: ["1024", "2048", "3072", "4096", "5120", "6144", "7168", "8192", "16384", "32768"]
 
   VpcStackName:
     Type: String
-    Description: FormKiQ VPC Stack Name 
+    Description: FormKiQ VPC Stack Name
 
   ECSCluster:
     Type: String
     Description: Reference to the ECSCluster
-    
+
+  Partition:
+    Description: The partition in which the resource is located. A partition is a group of AWS Regions
+    Type: String
+
+Mappings: 
+  TypesenseMap: 
+    "1024": 
+      "CPU": "512"
+    "2048": 
+      "CPU": "1024"
+    "3072": 
+      "CPU": "1024"
+    "4096": 
+      "CPU": "2048"
+    "5120": 
+      "CPU": "2048"
+    "6144": 
+      "CPU": "2048"
+    "7168": 
+      "CPU": "2048"
+    "8192": 
+      "CPU": "4096"
+    "16384": 
+      "CPU": "8192"
+    "32768": 
+      "CPU": "16384"
+
 Conditions:
   HasVpcStackName:
     Fn::Not:
@@ -70,6 +103,14 @@ Conditions:
       - Condition: CreateResources
 
 Resources:
+
+  TypesenseProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateResources
+    Properties:
+      LogGroupName: 
+        Fn::Sub: "/aws/vendedlogs/${AWS::StackName}/${TypesenseProcessor}"
+      RetentionInDays: 90
       
   TypesenseProcessor:
     Type: AWS::Serverless::Function
@@ -79,21 +120,24 @@ Resources:
     Properties:
       Handler: com.formkiq.module.lambda.typesense.TypesenseProcessor
       Description: Lambda function to add DynamoDB records to Typesense
-      Runtime: provided
+      Runtime: provided.al2
       Timeout: 
         Fn::Sub: "${LambdaTimeout}"
       MemorySize: 
         Fn::Sub: "${LambdaMemory}"
       CodeUri: ./formkiq-module-lambda-typesense-graalvm.zip
+      Tracing: Active
       AutoPublishCodeSha256: #@ data.values.hash or assert.fail("missing version")
-      ReservedConcurrentExecutions: 1
       Environment:
         Variables:
           APP_ENVIRONMENT: 
             Fn::Sub: "${AppEnvironment}"
-          DEBUG: false  
+          DEBUG: false
+          ENABLE_AWS_X_RAY: true
           FormKiQType:
             Ref: FormKiQType
+          DOCUMENT_SYNC_TABLE: 
+            Fn::Sub: "{{resolve:ssm:/formkiq/${AppEnvironment}/dynamodb/DocumentSyncsTableName}}"
           TYPESENSE_HOST:
             Fn::If:
             - CreateResources
@@ -123,7 +167,7 @@ Resources:
       Name: 
         Fn::Sub: "/formkiq/${AppEnvironment}/lambda/TypesenseProcessor"
       Type: String
-      Value: 
+      Value:
         Ref: TypesenseProcessor
       Tags:
         Application: 
@@ -133,6 +177,49 @@ Resources:
         StackName: 
           Fn::Sub: "${AWS::StackName}"
 
+  TypesenseApiEndpointParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateResources
+    Properties:
+      Description: "Typesense API Endpoint"
+      Name: 
+        Fn::Sub: "/formkiq/${AppEnvironment}/api/TypesenseEndpoint"
+      Type: String
+      Value:
+        Fn::GetAtt:
+          - ApiGateway
+          - ApiEndpoint
+      Tags:
+        Application: 
+          Fn::Sub: "FormKiQ ${FormKiQType}"
+        AppEnvironment: 
+          Fn::Sub: "${AppEnvironment}"
+        StackName: 
+          Fn::Sub: "${AWS::StackName}"
+          
+  TypesenseApiIdParameter:
+    Type: AWS::SSM::Parameter
+    Condition: CreateResources
+    Properties:
+      Description: "Typesense API ID"
+      Name: 
+        Fn::Sub: "/formkiq/${AppEnvironment}/api/TypesenseApiId"
+      Type: String
+      Value:
+        Fn::If:
+        - CreateResources
+        - Fn::GetAtt:
+          - ApiGateway
+          - ApiId
+        - ""
+      Tags:
+        Application: 
+          Fn::Sub: "FormKiQ ${FormKiQType}"
+        AppEnvironment: 
+          Fn::Sub: "${AppEnvironment}"
+        StackName: 
+          Fn::Sub: "${AWS::StackName}"
+          
   TypesenseLambdaRole:
     Type: AWS::IAM::Role
     Condition: CreateResources
@@ -158,8 +245,9 @@ Resources:
           - sts:AssumeRole
       Path: /
       ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-      - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+      - Fn::Sub: "arn:${Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+      - Fn::Sub: "arn:${Partition}:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
+      - Fn::Sub: "arn:${Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess"
       
   TypesenseLambdaRolePolicy: 
     Type: "AWS::IAM::Policy"
@@ -185,13 +273,24 @@ Resources:
             - dynamodb:GetShardIterator
             - dynamodb:ListStreams
             Resource: 
-            - Fn::Sub: "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/{{resolve:ssm:/formkiq/${AppEnvironment}/dynamodb/DocumentsTableName}}/stream/*"
-
+            - Fn::Sub: "arn:${Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/{{resolve:ssm:/formkiq/${AppEnvironment}/dynamodb/DocumentsTableName}}/stream/*"
+          - Effect: Allow
+            Action:
+            - dynamodb:PutItem
+            - dynamodb:Query
+            - dynamodb:DeleteItem
+            Resource:
+            - Fn::Sub: "arn:${Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/{{resolve:ssm:/formkiq/${AppEnvironment}/dynamodb/DocumentSyncsTableName}}" 
+            
   TypesenseTableStream:
     Type: AWS::Lambda::EventSourceMapping
     Condition: CreateResources
     Properties:
       Enabled: True
+      BatchSize: 1
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"dynamodb": {"Keys": {"SK": { "S": ["document"] }}}}'      
       EventSourceArn:
         Fn::Sub: "{{resolve:ssm:/formkiq/${AppEnvironment}/dynamodb/DocumentsStreamArn}}"
       FunctionName:
@@ -251,8 +350,13 @@ Resources:
     Condition: CreateResources
     Properties:
       Family: Typesense
-      Cpu: 512
-      Memory: 1024
+      Cpu:
+        Fn::FindInMap:
+          - TypesenseMap
+          - Ref: TypesenseMemory
+          - CPU      
+      Memory:
+        Ref: TypesenseMemory
       NetworkMode: awsvpc
       TaskRoleArn:
         Ref: TaskRole
@@ -331,7 +435,7 @@ Resources:
             Principal:
               Service: [ecs-tasks.amazonaws.com]
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - Fn::Sub: "arn:${Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
       Policies:
         -
           PolicyName: 
@@ -402,6 +506,7 @@ Resources:
       ProtocolType: HTTP
       Name:
         Fn::Sub: "${AWS::StackName} Typesense - ${AppEnvironment}"
+      Description: "FormKiQ Typesense API"
 
   Integration:
     Type: AWS::ApiGatewayV2::Integration
@@ -421,14 +526,29 @@ Resources:
           - Arn
       PayloadFormatVersion: "1.0"
 
+  StageAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 90
+      LogGroupName: 
+        Fn::Sub: "/aws/vendedlogs/${AWS::StackName}/APITypeSenseAccessLogs"
+        
   Stage:
     Type: AWS::ApiGatewayV2::Stage
+    DependsOn:
+      - ApiGateway
     Condition: CreateResources
     Properties:
       ApiId: 
         Ref: ApiGateway
       StageName: $default
       AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: 
+          Fn::GetAtt: 
+          - StageAccessLogs
+          - Arn
+        Format: '{ "requestId":"$context.requestId", "ip": "$context.identity.sourceIp", "requestTime":"$context.requestTime", "httpMethod":"$context.httpMethod","routeKey":"$context.routeKey", "status":"$context.status","protocol":"$context.protocol", "integrationStatus": $context.integrationStatus, "integrationLatency": $context.integrationLatency, "responseLength":"$context.responseLength" }'
 
   Route:
     Type: AWS::ApiGatewayV2::Route

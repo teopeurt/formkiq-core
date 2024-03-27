@@ -24,12 +24,13 @@
 package com.formkiq.testutils.aws;
 
 import java.util.Arrays;
-import com.formkiq.aws.cognito.CognitoConnectionBuilder;
-import com.formkiq.aws.cognito.CognitoService;
+import com.formkiq.aws.cognito.CognitoIdentityProviderConnectionBuilder;
+import com.formkiq.aws.cognito.CognitoIdentityProviderService;
 import com.formkiq.stacks.client.FormKiqClientConnection;
 import com.formkiq.stacks.client.FormKiqClientV1;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminGetUserResponse;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AuthenticationResultType;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.UserType;
 
@@ -43,14 +44,16 @@ public class FkqCognitoService {
   private String awsprofile;
   /** {@link Region}. */
   private Region awsregion;
+  /** FormKiQ IAM Api Url. */
+  private String rootIamUrl;
+  /** FormKiQ Http Api Url. */
+  private String rootJwtUrl;
+  /** FormKiQ Key Api Url. */
+  private String rootKeyUrl;
+  /** {@link CognitoIdentityProviderService}. */
+  private CognitoIdentityProviderService service;
   /** {@link FkqSsmService}. */
   private FkqSsmService ssm;
-  /** {@link CognitoService}. */
-  private CognitoService service;
-  /** FormKiQ Http Api Url. */
-  private String rootHttpUrl;
-  /** FormKiQ IAM Api Url. */
-  private String rootRestUrl;
 
   /**
    * constructor.
@@ -66,11 +69,14 @@ public class FkqCognitoService {
     this.awsregion = awsRegion;
     this.ssm = new FkqSsmService(awsProfile, awsRegion);
 
-    this.rootHttpUrl =
+    this.rootJwtUrl =
         this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/api/DocumentsHttpUrl");
 
-    this.rootRestUrl =
+    this.rootIamUrl =
         this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/api/DocumentsIamUrl");
+
+    this.rootKeyUrl =
+        this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/api/DocumentsKeyUrl");
 
     String cognitoUserPoolId =
         this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/cognito/UserPoolId");
@@ -78,13 +84,20 @@ public class FkqCognitoService {
     String cognitoClientId =
         this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/cognito/UserPoolClientId");
 
-    String cognitoIdentitypool =
-        this.ssm.getParameterValue("/formkiq/" + appEnvironment + "/cognito/IdentityPoolId");
-
-    CognitoConnectionBuilder adminBuilder =
-        new CognitoConnectionBuilder(cognitoClientId, cognitoUserPoolId, cognitoIdentitypool)
+    CognitoIdentityProviderConnectionBuilder builder =
+        new CognitoIdentityProviderConnectionBuilder(cognitoClientId, cognitoUserPoolId)
             .setCredentials(awsProfile).setRegion(awsRegion);
-    this.service = new CognitoService(adminBuilder);
+
+    this.service = new CognitoIdentityProviderService(builder);
+  }
+
+  /**
+   * Add Cognito Group.
+   * 
+   * @param groupname {@link String}
+   */
+  public void addGroup(final String groupname) {
+    this.service.addGroup(groupname);
   }
 
   /**
@@ -115,16 +128,12 @@ public class FkqCognitoService {
   }
 
   /**
-   * Get FormKiQ Http Url.
+   * Get AWS Region.
    * 
-   * @param token {@link AuthenticationResultType}
-   * @return {@link FormKiqClientV1}
+   * @return {@link Region}
    */
-  public FormKiqClientV1 getFormKiqClient(final AuthenticationResultType token) {
-    FormKiqClientConnection connection = new FormKiqClientConnection(this.rootHttpUrl)
-        .cognitoIdToken(token.idToken()).header("Origin", Arrays.asList("http://localhost"))
-        .header("Access-Control-Request-Method", Arrays.asList("GET"));
-    return new FormKiqClientV1(connection);
+  public Region getAwsregion() {
+    return this.awsregion;
   }
 
   /**
@@ -135,12 +144,75 @@ public class FkqCognitoService {
   public FormKiqClientV1 getFormKiqClient() {
     try (ProfileCredentialsProvider credentials =
         ProfileCredentialsProvider.builder().profileName(this.awsprofile).build()) {
-      FormKiqClientConnection connection = new FormKiqClientConnection(this.rootRestUrl)
+      FormKiqClientConnection connection = new FormKiqClientConnection(this.rootIamUrl)
           .region(this.awsregion).credentials(credentials.resolveCredentials())
           .header("Origin", Arrays.asList("http://localhost"))
           .header("Access-Control-Request-Method", Arrays.asList("GET"));
       return new FormKiqClientV1(connection);
     }
+  }
+
+  /**
+   * Get FormKiQ Http Url.
+   * 
+   * @param token {@link AuthenticationResultType}
+   * @return {@link FormKiqClientV1}
+   */
+  public FormKiqClientV1 getFormKiqClient(final AuthenticationResultType token) {
+    FormKiqClientConnection connection = new FormKiqClientConnection(this.rootJwtUrl)
+        .cognitoIdToken(token.idToken()).header("Origin", Arrays.asList("http://localhost"))
+        .header("Access-Control-Request-Method", Arrays.asList("GET"));
+    return new FormKiqClientV1(connection);
+  }
+
+  /**
+   * Get FormKiQ Key API Url.
+   * 
+   * @param apiKey {@link String}
+   * @return {@link FormKiqClientV1}
+   */
+  public FormKiqClientV1 getFormKiqClient(final String apiKey) {
+    FormKiqClientConnection connection = new FormKiqClientConnection(this.rootKeyUrl)
+        .cognitoIdToken(apiKey).header("Origin", Arrays.asList("http://localhost"))
+        .header("Access-Control-Request-Method", Arrays.asList("GET"));
+    return new FormKiqClientV1(connection);
+  }
+
+  /**
+   * Get Iam Url.
+   * 
+   * @return {@link String}
+   */
+  public String getRootIamUrl() {
+    return this.rootIamUrl;
+  }
+
+  /**
+   * Get Root Http Url.
+   * 
+   * @return {@link String}
+   */
+  public String getRootJwtUrl() {
+    return this.rootJwtUrl;
+  }
+
+  /**
+   * Get Root Key Url.
+   * 
+   * @return {@link String}
+   */
+  public String getRootKeyUrl() {
+    return this.rootKeyUrl;
+  }
+
+  /**
+   * Get User.
+   * 
+   * @param username {@link String}
+   * @return {@link AdminGetUserResponse}
+   */
+  public AdminGetUserResponse getUser(final String username) {
+    return this.service.getUser(username);
   }
 
   /**
@@ -162,5 +234,17 @@ public class FkqCognitoService {
    */
   public AuthenticationResultType login(final String email, final String password) {
     return this.service.login(email, password);
+  }
+
+  /**
+   * Login User in NEW_PASSWORD_REQUIRED status.
+   * 
+   * @param email {@link String}
+   * @param password {@link String}
+   * @param newpassword {@link String}
+   */
+  public void loginWithNewPassword(final String email, final String password,
+      final String newpassword) {
+    this.service.loginWithNewPassword(email, password, newpassword);
   }
 }

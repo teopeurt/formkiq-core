@@ -10,6 +10,7 @@
 		<subpackage name="typesense">
 		
 			<allow pkg="com.formkiq.module.http" />
+			<allow pkg="com.formkiq.module.lambdaservices" />
 			<allow pkg="com.amazonaws.services.lambda.runtime" />
 			<allow pkg="com.formkiq.aws.dynamodb" />			
 			<allow pkg="com.formkiq.graalvm.annotations" />
@@ -21,6 +22,7 @@
 			<allow pkg="java.util" />
 				
 			<allow pkg="com.formkiq.module.typesense" />
+			<allow pkg="com.formkiq.stacks.dynamodb" />
 			
 			<allow pkg="software.amazon.awssdk.utils" />
 			<allow pkg="com.formkiq.module.typesense" />

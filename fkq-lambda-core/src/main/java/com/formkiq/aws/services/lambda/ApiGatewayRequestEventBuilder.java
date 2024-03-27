@@ -32,10 +32,10 @@ import java.util.Map;
  */
 public class ApiGatewayRequestEventBuilder {
 
-  /** {@link ApiGatewayRequestEvent}. */
-  private ApiGatewayRequestEvent event = new ApiGatewayRequestEvent();
   /** {@link ApiGatewayRequestContext}. */
   private ApiGatewayRequestContext context = new ApiGatewayRequestContext();
+  /** {@link ApiGatewayRequestEvent}. */
+  private ApiGatewayRequestEvent event = new ApiGatewayRequestEvent();
 
   /**
    * Set Body.
@@ -45,6 +45,19 @@ public class ApiGatewayRequestEventBuilder {
    */
   public ApiGatewayRequestEventBuilder body(final String body) {
     this.event.setBody(body);
+    return this;
+  }
+
+  /**
+   * Set Body.
+   * 
+   * @param body {@link String}
+   * @param isBase64 boolean
+   * @return {@link ApiGatewayRequestEventBuilder}
+   */
+  public ApiGatewayRequestEventBuilder body(final String body, final boolean isBase64) {
+    this.event.setBody(body);
+    this.event.setIsBase64Encoded(Boolean.valueOf(isBase64));
     return this;
   }
 
@@ -64,8 +77,12 @@ public class ApiGatewayRequestEventBuilder {
    * @return {@link ApiGatewayRequestEventBuilder}
    */
   public ApiGatewayRequestEventBuilder group(final String group) {
-    this.context.setAuthorizer(Map.of("claims", Map.of("cognito:groups", "[" + group + "]")));
-    this.event.setRequestContext(this.context);
+
+    if (group != null) {
+      this.context.setAuthorizer(Map.of("claims", Map.of("cognito:groups", "[" + group + "]")));
+      this.event.setRequestContext(this.context);
+    }
+
     return this;
   }
 

@@ -24,10 +24,10 @@
 package com.formkiq.aws.dynamodb;
 
 import java.net.URI;
-import java.net.URISyntaxException;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration.Builder;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
@@ -46,12 +46,19 @@ public class DynamoDbConnectionBuilder {
 
   /**
    * constructor.
+   * 
+   * @param enableAwsXray Enables AWS X-Ray
    */
-  public DynamoDbConnectionBuilder() {
+  public DynamoDbConnectionBuilder(final boolean enableAwsXray) {
     System.setProperty("software.amazon.awssdk.http.service.impl",
         "software.amazon.awssdk.http.urlconnection.UrlConnectionSdkHttpService");
-    this.builder = DynamoDbClient.builder()
-        .overrideConfiguration(ClientOverrideConfiguration.builder().build());
+    Builder clientConfig = ClientOverrideConfiguration.builder();
+
+    // if (enableAwsXray) {
+    // clientConfig.addExecutionInterceptor(new TracingInterceptor());
+    // }
+
+    this.builder = DynamoDbClient.builder().overrideConfiguration(clientConfig.build());
   }
 
   /**
@@ -100,12 +107,11 @@ public class DynamoDbConnectionBuilder {
   /**
    * Set Endpoint Override.
    * 
-   * @param uri {@link String}
+   * @param uri {@link URI}
    * @return {@link DynamoDbConnectionBuilder}
-   * @throws URISyntaxException URISyntaxException
    */
-  public DynamoDbConnectionBuilder setEndpointOverride(final String uri) throws URISyntaxException {
-    this.builder = this.builder.endpointOverride(new URI(uri));
+  public DynamoDbConnectionBuilder setEndpointOverride(final URI uri) {
+    this.builder = this.builder.endpointOverride(uri);
     return this;
   }
 

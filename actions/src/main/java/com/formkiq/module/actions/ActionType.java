@@ -23,18 +23,27 @@
  */
 package com.formkiq.module.actions;
 
+import com.formkiq.graalvm.annotations.Reflectable;
+
 /**
  * 
  * Supported Type of Actions.
  *
  */
+@Reflectable
 public enum ActionType {
   /** AntiVirus. */
   ANTIVIRUS,
+  /** Document Tagging. */
+  DOCUMENTTAGGING,
   /** Full Text. */
   FULLTEXT,
+  /** Notification Action. */
+  NOTIFICATION,
   /** OCR. */
   OCR,
+  /** Queue. */
+  QUEUE,
   /** WebHook. */
   WEBHOOK;
 }

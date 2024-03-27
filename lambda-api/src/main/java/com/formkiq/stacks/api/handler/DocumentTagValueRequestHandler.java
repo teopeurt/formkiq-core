@@ -23,26 +23,24 @@
  */
 package com.formkiq.stacks.api.handler;
 
+import static com.formkiq.aws.dynamodb.objects.Objects.throwIfNull;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_OK;
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
 import com.formkiq.aws.services.lambda.ApiMessageResponse;
 import com.formkiq.aws.services.lambda.ApiRequestHandlerResponse;
 import com.formkiq.aws.services.lambda.ApiResponse;
+import com.formkiq.aws.services.lambda.exceptions.DocumentNotFoundException;
 import com.formkiq.aws.services.lambda.exceptions.NotFoundException;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPlugin;
-import com.formkiq.stacks.client.FormKiqClientV1;
-import com.formkiq.stacks.client.models.DeleteFulltextTag;
-import com.formkiq.stacks.client.requests.DeleteFulltextTagsRequest;
 import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.validation.ValidationError;
 import com.formkiq.validation.ValidationException;
@@ -59,10 +57,10 @@ public class DocumentTagValueRequestHandler
 
   @Override
   public ApiRequestHandlerResponse delete(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
-    String siteId = authorizer.getSiteId();
+    String siteId = authorization.siteId();
     Map<String, String> map = event.getPathParameters();
     String documentId = map.get("documentId");
     String tagKey = map.get("tagKey");
@@ -71,9 +69,7 @@ public class DocumentTagValueRequestHandler
     DocumentService documentService = awsservice.getExtension(DocumentService.class);
 
     DocumentItem item = documentService.findDocument(siteId, documentId);
-    if (item == null) {
-      throw new NotFoundException("Document " + documentId + " not found.");
-    }
+    throwIfNull(item, new DocumentNotFoundException(documentId));
 
     DocumentTagSchemaPlugin plugin = awsservice.getExtension(DocumentTagSchemaPlugin.class);
     Collection<ValidationError> errors =
@@ -87,34 +83,9 @@ public class DocumentTagValueRequestHandler
       throw new NotFoundException("Tag/Value combination not found.");
     }
 
-    deleteFulltextTags(awsservice, siteId, documentId, tagKey, tagValue);
-
     ApiResponse resp = new ApiMessageResponse("Removed Tag from document '" + documentId + "'.");
 
     return new ApiRequestHandlerResponse(SC_OK, resp);
-  }
-
-  /**
-   * Update Fulltext index if Module available.
-   * 
-   * @param awsservice {@link AwsServiceCache}
-   * @param siteId {@link String}
-   * @param documentId {@link String}
-   * @param tagKey {@link String}
-   * @param tagValue {@link String}
-   * @throws IOException IOException
-   * @throws InterruptedException InterruptedException
-   */
-  private void deleteFulltextTags(final AwsServiceCache awsservice, final String siteId,
-      final String documentId, final String tagKey, final String tagValue)
-      throws IOException, InterruptedException {
-
-    if (awsservice.hasModule("fulltext")) {
-      FormKiqClientV1 client = awsservice.getExtension(FormKiqClientV1.class);
-
-      client.deleteFulltextTags(new DeleteFulltextTagsRequest().siteId(siteId)
-          .documentId(documentId).tag(new DeleteFulltextTag().key(tagKey).value(tagValue)));
-    }
   }
 
   @Override

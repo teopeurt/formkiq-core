@@ -4,7 +4,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: #@ "FormKiQ Core " + data.values.version or assert.fail("missing version")
-    
+        
 Parameters:
 
   AdminEmail:
@@ -57,7 +57,9 @@ Parameters:
 
   VpcStackName:
     Type: String
-    Description: (optional) FormKiQ VPC Stack Name 
+    Description: >
+      The name of the CloudFormation VPC stack that can be created after the initial FormKiQ install, using the add-on CloudFormation template for VPC https://docs.formkiq.com/docs/getting-started/quick-start#create-vpc.
+      Some services such as Typesense, Tesseract, and OpenSearch require a VPC. Only required if you are using any of these services; otherwise, this can remain empty.
     Default: ""
 
   TypesenseApiKey:
@@ -65,12 +67,98 @@ Parameters:
     Description: (optional) Random string of characters for https://typesense.org API access 
     Default: ""
 
+  TypesenseMemory:
+    Type: String
+    Description: The amount of memory used by Typesense (GB). (Suggested to be 2-3 times the size of your data)
+    Default: "1024"
+    AllowedValues: ["1024", "2048", "3072", "4096", "5120", "6144", "7168", "8192", "16384", "32768"]
+    
   CapacityProvider:
     Description: AWS Fargate capacity provider to use, either the FARGATE or FARGATE_SPOT 
     Default: "FARGATE_SPOT"
     Type: String
     AllowedValues: ["FARGATE_SPOT", "FARGATE"]
-    
+
+Mappings: 
+  RegionMap: 
+    us-east-2:
+      PARTITION: "aws"
+    us-east-1:
+      PARTITION: "aws"
+    us-west-1:
+      PARTITION: "aws"
+    us-west-2:
+      PARTITION: "aws"
+    af-south-1:
+      PARTITION: "aws"
+    ap-east-1:
+      PARTITION: "aws"
+    ap-south-2:
+      PARTITION: "aws"
+    ap-southeast-3:
+      PARTITION: "aws"
+    ap-southeast-4:
+      PARTITION: "aws"
+    ap-south-1:
+      PARTITION: "aws"
+    ap-northeast-3:
+      PARTITION: "aws"
+    ap-northeast-2:
+      PARTITION: "aws"
+    ap-southeast-1:
+      PARTITION: "aws"
+    ap-southeast-2:
+      PARTITION: "aws"
+    ap-northeast-1:
+      PARTITION: "aws"
+    ca-central-1:
+      PARTITION: "aws"
+    eu-central-1:
+      PARTITION: "aws"
+    eu-west-1:
+      PARTITION: "aws"
+    eu-west-2:
+      PARTITION: "aws"
+    eu-south-1:
+      PARTITION: "aws"
+    eu-west-3:
+      PARTITION: "aws"
+    eu-south-2:
+      PARTITION: "aws"
+    eu-north-1:
+      PARTITION: "aws"
+    eu-central-2:
+      PARTITION: "aws"
+    il-central-1:
+      PARTITION: "aws"
+    me-south-1:
+      PARTITION: "aws"
+    me-central-1:
+      PARTITION: "aws"
+    sa-east-1:
+      PARTITION: "aws"
+    us-gov-east-1:
+      PARTITION: "aws-us-gov"
+    us-gov-west-1:
+      PARTITION: "aws-us-gov"
+      
+Conditions:
+
+  HasTypesenseApiKey:
+    Fn::Not:
+      - Fn::Equals: 
+        - Ref: TypesenseApiKey
+        - ''
+
+  IsGovCloud:
+    Fn::Or:
+      - Fn::Equals:
+          - Ref: AWS::Region
+          - us-gov-west-1
+      - Fn::Equals:
+          - Ref: AWS::Region
+          - us-gov-east-1
+
 Resources:
 
   EditionParameter:
@@ -124,8 +212,17 @@ Resources:
     Properties:
       Location: storage/template.yaml
       Parameters:
+        TypesenseApiKey:
+          Ref: TypesenseApiKey
+        VpcStackName:
+          Ref: VpcStackName
         AppEnvironment: 
           Ref: AppEnvironment
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
       Tags:
         Application: "FormKiQ Core"
         AppEnvironment: 
@@ -142,6 +239,11 @@ Resources:
           Ref: AppEnvironment
         AdminEmail: 
           Ref: AdminEmail
+        IsGovCloud:
+          Fn::If:
+          - IsGovCloud
+          - "true"
+          - "false"
       Tags:
         Application: "FormKiQ Core"
         AppEnvironment: 
@@ -157,6 +259,16 @@ Resources:
     Properties:
       Location: console/template-install.yaml
       Parameters:
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
+        IsGovCloud:
+          Fn::If:
+          - IsGovCloud
+          - "true"
+          - "false"
         AppEnvironment: 
           Ref: AppEnvironment
         ConsoleVersion: 
@@ -200,6 +312,14 @@ Resources:
           Fn::GetAtt:
           - Cognito
           - Outputs.Domain
+        HostedZoneId:
+          Fn::GetAtt:
+          - CoreConsole
+          - Outputs.HostedZoneId
+        CloudFrontDistributionDomainName: 
+          Fn::GetAtt:
+          - CoreConsole
+          - Outputs.CloudFrontDistributionDomainName                       
       Tags:
         Application: "FormKiQ Core"
         AppEnvironment: 
@@ -229,6 +349,11 @@ Resources:
           Fn::Sub: "${PasswordRequireUppercase}"
         Domain: 
           Fn::Sub: "${AppEnvironment}${AWS::AccountId}"
+        AwsArnPartition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
         RedirectUrl:
           Fn::GetAtt:
           - CoreConsole
@@ -279,6 +404,11 @@ Resources:
     Properties:
       Location: api/template.yaml
       Parameters:
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
         AppEnvironment: 
           Ref: AppEnvironment
         EnablePublicUrls: 
@@ -311,7 +441,8 @@ Resources:
           Fn::GetAtt:
           - TypeSenseService
           - Outputs.TypesenseApiEndpoint
-          
+        VpcStackName:
+          Ref: VpcStackName
       Tags:
         Application: "FormKiQ Core"
         AppEnvironment: 
@@ -328,6 +459,16 @@ Resources:
     Properties:
       Location: console/template-users.yaml
       Parameters:
+        IsGovCloud:
+          Fn::If:
+          - IsGovCloud
+          - "true"
+          - "false"
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
         AppEnvironment: 
           Ref: AppEnvironment
         AdminEmail: 
@@ -364,6 +505,11 @@ Resources:
       Parameters:
         AppEnvironment: 
           Ref: AppEnvironment
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
         CognitoUserPoolId: 
           Fn::GetAtt: 
           - Cognito
@@ -379,36 +525,10 @@ Resources:
         StackName: 
           Fn::Sub: "${AWS::StackName}"
 
-  ECSCluster:
-    Type: 'AWS::ECS::Cluster'
-    Properties:
-      ClusterName:
-        Fn::Sub: "FormKiQ-${AppEnvironment}"
-      CapacityProviders:
-        - FARGATE
-        - FARGATE_SPOT
-      DefaultCapacityProviderStrategy:
-        - CapacityProvider:
-            Ref: CapacityProvider
-          Weight: 1
-      Tags:
-        - Key: "Application"
-          Value: 
-            Fn::Sub: "FormKiQ"        
-        - Key: "AppEnvironment"
-          Value: 
-            Fn::Sub: "${AppEnvironment}"
-        - Key: "StackName"
-          Value: 
-            Fn::Sub: "${AWS::StackName}"
-            
-  TypeSenseService:
+  EcsCluster:
     Type: AWS::Serverless::Application
-    DependsOn:
-      - ECSCluster
-      - CoreStorage
     Properties:
-      Location: typesense/template.yaml
+      Location: ./ecs-cluster.yaml
       Parameters:
         AppEnvironment: 
           Ref: AppEnvironment
@@ -416,8 +536,34 @@ Resources:
           Ref: TypesenseApiKey
         VpcStackName:
           Ref: VpcStackName
-        ECSCluster:
-          Ref: ECSCluster
+        CapacityProvider:
+          Ref: CapacityProvider
+            
+  TypeSenseService:
+    Type: AWS::Serverless::Application
+    DependsOn:
+      - EcsCluster
+      - CoreStorage
+    Properties:
+      Location: typesense/template.yaml
+      Parameters:
+        AppEnvironment: 
+          Ref: AppEnvironment
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
+        TypesenseApiKey:
+          Ref: TypesenseApiKey
+        VpcStackName:
+          Ref: VpcStackName
+        ECSCluster: 
+          Fn::GetAtt: 
+          - EcsCluster
+          - Outputs.ECSCluster
+        TypesenseMemory:
+          Ref: TypesenseMemory
       Tags:
         Application: "FormKiQ Core"
         AppEnvironment: 
@@ -425,6 +571,69 @@ Resources:
         StackName: 
           Fn::Sub: "${AWS::StackName}"
 
+  TypesenseApiKeyParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasTypesenseApiKey
+    Properties:
+      Description: "Typesense API Key"
+      Name: 
+        Fn::Sub: "/formkiq/${AppEnvironment}/typesense/ApiKey"
+      Type: String
+      Value:      
+        Ref: TypesenseApiKey
+      Tags:
+        Application: 
+          Fn::Sub: "FormKiQ Core"
+        AppEnvironment: 
+          Fn::Sub: "${AppEnvironment}"
+        StackName: 
+          Fn::Sub: "${AWS::StackName}"
+          
+  CognitoApiIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: "Cognito API ID"
+      Name: 
+        Fn::Sub: "/formkiq/${AppEnvironment}/api/CognitoApiId"
+      Type: String
+      Value:
+        Fn::GetAtt: 
+        - Cognito
+        - Outputs.HttpApi
+      Tags:
+        AppEnvironment: 
+          Fn::Sub: "${AppEnvironment}"
+        StackName: 
+          Fn::Sub: "${AWS::StackName}"
+          
+  Monitoring:
+    Type: AWS::Serverless::Application
+    DependsOn:
+      - TypeSenseService
+      - CoreStorage
+      - CoreApi
+      - Cognito
+    Properties:
+      Location: ./monitoring.yaml
+      Parameters:
+        AppEnvironment: 
+          Ref: AppEnvironment
+
+  Ocr:
+    Type: AWS::Serverless::Application
+    DependsOn:
+      - CoreApi
+    Properties:
+      Location: ocr/template.yaml
+      Parameters:
+        AppEnvironment: 
+          Ref: AppEnvironment
+        Partition:
+          Fn::FindInMap:
+          - RegionMap
+          - Ref: "AWS::Region"
+          - PARTITION
+                    
 Outputs:
   AppEnvironment:
     Description: Unique Application Environment Identifier, IE dev/staging/prod
@@ -436,6 +645,12 @@ Outputs:
       Fn::GetAtt: 
       - CoreApi
       - Outputs.DocumentsIamApiUrl
+  KeyApiUrl:
+    Description: "The URL for the API endpoint that uses API Key authorization"
+    Value: 
+      Fn::GetAtt: 
+      - CoreApi
+      - Outputs.DocumentsKeyApiUrl
   HttpApiUrl:
     Description: "The URL for the API endpoint that uses Cognito authorization"
     Value: 
@@ -505,3 +720,10 @@ Outputs:
       Fn::GetAtt: 
       - CoreStorage
       - Outputs.DocumentsStageS3Bucket
+      
+  TypesenseApiEndpoint:
+    Description: Typesense API endpoint
+    Value:
+      Fn::GetAtt:
+      - TypeSenseService
+      - Outputs.TypesenseApiEndpoint

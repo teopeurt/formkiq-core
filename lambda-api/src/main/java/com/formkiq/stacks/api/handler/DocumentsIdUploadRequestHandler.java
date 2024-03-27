@@ -23,6 +23,8 @@
  */
 package com.formkiq.stacks.api.handler;
 
+import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.isDefaultSiteId;
+import static com.formkiq.aws.dynamodb.objects.Objects.throwIfNull;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_OK;
 import java.net.URL;
 import java.net.URLDecoder;
@@ -38,14 +40,15 @@ import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
 import com.formkiq.aws.dynamodb.model.DocumentTagType;
-import com.formkiq.aws.s3.S3Service;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.s3.S3PresignerService;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
+import com.formkiq.aws.services.lambda.ApiPermission;
 import com.formkiq.aws.services.lambda.ApiRequestHandlerResponse;
 import com.formkiq.aws.services.lambda.exceptions.BadException;
-import com.formkiq.aws.services.lambda.exceptions.NotFoundException;
+import com.formkiq.aws.services.lambda.exceptions.DocumentNotFoundException;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
 import com.formkiq.stacks.api.ApiUrlResponse;
 import com.formkiq.stacks.dynamodb.DocumentCountService;
@@ -131,10 +134,10 @@ public class DocumentsIdUploadRequestHandler
   private String generatePresignedUrl(final AwsServiceCache awsservice, final String siteId,
       final String documentId, final Map<String, String> query) throws BadException {
 
-    String key = siteId != null ? siteId + "/" + documentId : documentId;
+    String key = !isDefaultSiteId(siteId) ? siteId + "/" + documentId : documentId;
     Duration duration = caculateDuration(query);
     Optional<Long> contentLength = calculateContentLength(awsservice, query, siteId);
-    S3Service s3Service = awsservice.getExtension(S3Service.class);
+    S3PresignerService s3Service = awsservice.getExtension(S3PresignerService.class);
 
     Map<String, String> map = Map.of("checksum", UUID.randomUUID().toString());
     URL url = s3Service.presignPutUrl(awsservice.environment("DOCUMENTS_S3_BUCKET"), key, duration,
@@ -146,14 +149,14 @@ public class DocumentsIdUploadRequestHandler
 
   @Override
   public ApiRequestHandlerResponse get(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
     boolean documentExists = false;
 
     Date date = new Date();
     String documentId = UUID.randomUUID().toString();
-    String username = getCallingCognitoUsername(event);
+    String username = authorization.username();
     DocumentItem item = new DocumentItemDynamoDb(documentId, date, username);
 
     List<DocumentTag> tags = new ArrayList<>();
@@ -161,7 +164,7 @@ public class DocumentsIdUploadRequestHandler
     Map<String, String> map = event.getPathParameters();
     Map<String, String> query = event.getQueryStringParameters();
 
-    String siteId = authorizer.getSiteId();
+    String siteId = authorization.siteId();
     DocumentService service = awsservice.getExtension(DocumentService.class);
 
     if (map != null && map.containsKey("documentId")) {
@@ -169,12 +172,9 @@ public class DocumentsIdUploadRequestHandler
       documentId = map.get("documentId");
 
       item = service.findDocument(siteId, documentId);
+      throwIfNull(item, new DocumentNotFoundException(documentId));
 
       documentExists = item != null;
-
-      if (!documentExists) {
-        throw new NotFoundException("Document " + documentId + " not found.");
-      }
 
     } else if (query != null && query.containsKey("path")) {
 
@@ -182,8 +182,6 @@ public class DocumentsIdUploadRequestHandler
       path = URLDecoder.decode(path, StandardCharsets.UTF_8.toString());
 
       item.setPath(path);
-      tags.add(
-          new DocumentTag(documentId, "path", path, date, username, DocumentTagType.SYSTEMDEFINED));
     }
 
     String urlstring = generatePresignedUrl(awsservice, siteId, documentId, query);
@@ -228,5 +226,12 @@ public class DocumentsIdUploadRequestHandler
     } else {
       throw new BadException("Max Number of Documents reached");
     }
+  }
+
+  @Override
+  public Optional<Boolean> isAuthorized(final AwsServiceCache awsservice, final String method,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization) {
+    boolean access = authorization.permissions().contains(ApiPermission.WRITE);
+    return Optional.of(Boolean.valueOf(access));
   }
 }

@@ -23,11 +23,15 @@
  */
 package com.formkiq.stacks.lambda.s3;
 
+import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.createS3Key;
 import static com.formkiq.aws.dynamodb.objects.Objects.notNull;
-import static com.formkiq.module.documentevents.DocumentEventType.ACTIONS;
+import static com.formkiq.aws.dynamodb.objects.Strings.isEmpty;
+import static com.formkiq.module.events.document.DocumentEventType.ACTIONS;
+import static com.formkiq.module.http.HttpResponseStatus.is2XX;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpRequest;
@@ -40,148 +44,172 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
-import com.formkiq.aws.dynamodb.PaginationResults;
+import com.formkiq.aws.dynamodb.DbKeys;
+import com.formkiq.aws.dynamodb.DynamoDbAwsServiceRegistry;
+import com.formkiq.aws.dynamodb.DynamoDbService;
+import com.formkiq.aws.dynamodb.DynamoDbServiceExtension;
 import com.formkiq.aws.dynamodb.SiteIdKeyGenerator;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
+import com.formkiq.aws.dynamodb.model.DocumentMapToDocument;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
-import com.formkiq.aws.dynamodb.model.DocumentTagType;
+import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
 import com.formkiq.aws.s3.PresignGetUrlConfig;
-import com.formkiq.aws.s3.S3ConnectionBuilder;
+import com.formkiq.aws.s3.S3AwsServiceRegistry;
+import com.formkiq.aws.s3.S3PresignerService;
+import com.formkiq.aws.s3.S3PresignerServiceExtension;
 import com.formkiq.aws.s3.S3Service;
-import com.formkiq.aws.sns.SnsConnectionBuilder;
-import com.formkiq.aws.ssm.SsmConnectionBuilder;
+import com.formkiq.aws.s3.S3ServiceExtension;
+import com.formkiq.aws.ses.SesAwsServiceRegistry;
+import com.formkiq.aws.ses.SesService;
+import com.formkiq.aws.ses.SesServiceExtension;
+import com.formkiq.aws.sns.SnsAwsServiceRegistry;
+import com.formkiq.aws.ssm.SmsAwsServiceRegistry;
 import com.formkiq.aws.ssm.SsmService;
-import com.formkiq.aws.ssm.SsmServiceCache;
+import com.formkiq.aws.ssm.SsmServiceExtension;
 import com.formkiq.graalvm.annotations.Reflectable;
-import com.formkiq.graalvm.annotations.ReflectableClass;
-import com.formkiq.graalvm.annotations.ReflectableClasses;
-import com.formkiq.graalvm.annotations.ReflectableField;
-import com.formkiq.graalvm.annotations.ReflectableImport;
 import com.formkiq.module.actions.Action;
 import com.formkiq.module.actions.ActionStatus;
 import com.formkiq.module.actions.ActionType;
+import com.formkiq.module.actions.services.ActionStatusPredicate;
 import com.formkiq.module.actions.services.ActionsNotificationService;
-import com.formkiq.module.actions.services.ActionsNotificationServiceImpl;
+import com.formkiq.module.actions.services.ActionsNotificationServiceExtension;
 import com.formkiq.module.actions.services.ActionsService;
-import com.formkiq.module.actions.services.ActionsServiceDynamoDb;
-import com.formkiq.module.actions.services.NextActionPredicate;
-import com.formkiq.module.documentevents.DocumentEvent;
+import com.formkiq.module.actions.services.ActionsServiceExtension;
+import com.formkiq.module.events.EventService;
+import com.formkiq.module.events.EventServiceSnsExtension;
+import com.formkiq.module.events.document.DocumentEvent;
+import com.formkiq.module.http.HttpResponseStatus;
+import com.formkiq.module.http.HttpService;
+import com.formkiq.module.httpsigv4.HttpServiceSigv4;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
-import com.formkiq.stacks.client.FormKiqClientConnection;
-import com.formkiq.stacks.client.FormKiqClientV1;
-import com.formkiq.stacks.client.models.SetDocumentFulltext;
-import com.formkiq.stacks.client.models.UpdateFulltextTag;
-import com.formkiq.stacks.client.requests.AddDocumentOcrRequest;
-import com.formkiq.stacks.client.requests.GetDocumentOcrRequest;
-import com.formkiq.stacks.client.requests.OcrParseType;
-import com.formkiq.stacks.client.requests.SetDocumentAntivirusRequest;
-import com.formkiq.stacks.client.requests.SetDocumentFulltextRequest;
-import com.formkiq.stacks.common.formats.MimeType;
+import com.formkiq.module.lambdaservices.AwsServiceCacheBuilder;
+import com.formkiq.module.lambdaservices.ClassServiceExtension;
+import com.formkiq.module.typesense.TypeSenseService;
+import com.formkiq.module.typesense.TypeSenseServiceExtension;
+import com.formkiq.stacks.dynamodb.ConfigService;
+import com.formkiq.stacks.dynamodb.ConfigServiceExtension;
+import com.formkiq.stacks.dynamodb.DocumentItemToDynamicDocumentItem;
 import com.formkiq.stacks.dynamodb.DocumentService;
-import com.formkiq.stacks.dynamodb.DocumentServiceImpl;
+import com.formkiq.stacks.dynamodb.DocumentServiceExtension;
 import com.formkiq.stacks.dynamodb.DocumentVersionService;
-import com.formkiq.stacks.dynamodb.DocumentVersionServiceDynamoDb;
 import com.formkiq.stacks.dynamodb.DocumentVersionServiceExtension;
-import com.formkiq.stacks.dynamodb.DocumentVersionServiceNoVersioning;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
 
 /** {@link RequestHandler} for handling Document Actions. */
 @Reflectable
-@ReflectableImport(classes = {DocumentEvent.class, DocumentVersionServiceDynamoDb.class,
-    DocumentVersionServiceNoVersioning.class})
-@ReflectableClasses({@ReflectableClass(className = UpdateFulltextTag.class,
-    allPublicConstructors = true, fields = {@ReflectableField(name = "key"),
-        @ReflectableField(name = "value"), @ReflectableField(name = "values")})})
-public class DocumentActionsProcessor implements RequestHandler<Map<String, Object>, Void> {
+public class DocumentActionsProcessor implements RequestHandler<Map<String, Object>, Void>, DbKeys {
 
-  /** {@link ActionsService}. */
-  private ActionsService actionsService;
-  /** S3 Documents Bucket. */
-  private String documentsBucket;
-  /** {@link DocumentService}. */
-  private DocumentService documentService;
-  /** IAM Documents Url. */
-  private String documentsIamUrl;
-  /** {@link FormKiqClientConnection}. */
-  private FormKiqClientConnection fkqConnection;
-  /** {@link FormKiqClientV1}. */
-  private FormKiqClientV1 formkiqClient = null;
+  /** Default Maximum for Typesense Content. */
+  private static final int DEFAULT_TYPESENSE_CHARACTER_MAX = 32768;
+  /** {@link AwsServiceCache}. */
+  private static AwsServiceCache serviceCache;
+
+  static {
+
+    if (System.getenv().containsKey("AWS_REGION")) {
+      serviceCache = new AwsServiceCacheBuilder(System.getenv(), Map.of(),
+          EnvironmentVariableCredentialsProvider.create())
+          .addService(new DynamoDbAwsServiceRegistry(), new S3AwsServiceRegistry(),
+              new SnsAwsServiceRegistry(), new SmsAwsServiceRegistry(), new SesAwsServiceRegistry())
+          .build();
+
+      initialize(serviceCache);
+    }
+  }
+
+  /**
+   * Initialize.
+   * 
+   * @param awsServiceCache {@link AwsServiceCache}
+   */
+  static void initialize(final AwsServiceCache awsServiceCache) {
+
+    awsServiceCache.register(DynamoDbService.class, new DynamoDbServiceExtension());
+    awsServiceCache.register(SsmService.class, new SsmServiceExtension());
+    awsServiceCache.register(S3Service.class, new S3ServiceExtension());
+    awsServiceCache.register(S3PresignerService.class, new S3PresignerServiceExtension());
+    awsServiceCache.register(DocumentVersionService.class, new DocumentVersionServiceExtension());
+    awsServiceCache.register(DocumentService.class, new DocumentServiceExtension());
+    awsServiceCache.register(ConfigService.class, new ConfigServiceExtension());
+    awsServiceCache.register(EventService.class, new EventServiceSnsExtension());
+    awsServiceCache.register(ActionsService.class, new ActionsServiceExtension());
+    awsServiceCache.register(ActionsNotificationService.class,
+        new ActionsNotificationServiceExtension());
+    awsServiceCache.register(SesService.class, new SesServiceExtension());
+
+    SsmService ssmService = awsServiceCache.getExtension(SsmService.class);
+
+    String appEnvironment = awsServiceCache.environment("APP_ENVIRONMENT");
+
+    String typeSenseHost =
+        ssmService.getParameterValue("/formkiq/" + appEnvironment + "/api/TypesenseEndpoint");
+    String typeSenseApiKey =
+        ssmService.getParameterValue("/formkiq/" + appEnvironment + "/typesense/ApiKey");
+
+    if (!isEmpty(typeSenseHost) && !isEmpty(typeSenseApiKey)) {
+      awsServiceCache.environment().put("TYPESENSE_HOST", typeSenseHost);
+      awsServiceCache.environment().put("TYPESENSE_API_KEY", typeSenseApiKey);
+      awsServiceCache.register(TypeSenseService.class, new TypeSenseServiceExtension());
+    }
+
+    String documentsIamUrl =
+        ssmService.getParameterValue("/formkiq/" + appEnvironment + "/api/DocumentsIamUrl");
+
+    awsServiceCache.environment().put("documentsIamUrl", documentsIamUrl);
+    AwsCredentials awsCredentials = awsServiceCache.getExtension(AwsCredentials.class);
+    awsServiceCache.register(HttpService.class, new ClassServiceExtension<HttpService>(
+        new HttpServiceSigv4(awsServiceCache.region(), awsCredentials)));
+  }
+
   /** {@link Gson}. */
   private Gson gson = new GsonBuilder().create();
-  /** {@link ActionsNotificationService}. */
-  private ActionsNotificationService notificationService;
-  /** Ocr Bucket. */
-  private String ocrBucket;
-  /** {@link S3Service}. */
-  private S3Service s3Service;
 
   /**
    * constructor.
    * 
    */
   public DocumentActionsProcessor() {
-    this(System.getenv(), Region.of(System.getenv("AWS_REGION")),
-        EnvironmentVariableCredentialsProvider.create().resolveCredentials(),
-        new DynamoDbConnectionBuilder().setRegion(Region.of(System.getenv("AWS_REGION"))),
-        new S3ConnectionBuilder().setRegion(Region.of(System.getenv("AWS_REGION"))),
-        new SsmConnectionBuilder().setRegion(Region.of(System.getenv("AWS_REGION"))),
-        new SnsConnectionBuilder().setRegion(Region.of(System.getenv("AWS_REGION"))));
+    // empty
   }
 
   /**
    * constructor.
-   *
-   * @param map {@link Map}
-   * @param awsRegion {@link Region}
-   * @param awsCredentials {@link AwsCredentials}
-   * @param dbBuilder {@link DynamoDbConnectionBuilder}
-   * @param s3 {@link S3ConnectionBuilder}
-   * @param ssm {@link SsmConnectionBuilder}
-   * @param sns {@link SnsConnectionBuilder}
+   * 
+   * @param awsServiceCache {@link AwsServiceCache}
+   * 
    */
-  protected DocumentActionsProcessor(final Map<String, String> map, final Region awsRegion,
-      final AwsCredentials awsCredentials, final DynamoDbConnectionBuilder dbBuilder,
-      final S3ConnectionBuilder s3, final SsmConnectionBuilder ssm,
-      final SnsConnectionBuilder sns) {
+  public DocumentActionsProcessor(final AwsServiceCache awsServiceCache) {
 
-    AwsServiceCache serviceCache = new AwsServiceCache().environment(map);
-    DocumentVersionServiceExtension dsExtension = new DocumentVersionServiceExtension();
-    DocumentVersionService versionService = dsExtension.loadService(serviceCache);
+    initialize(awsServiceCache);
+    serviceCache = awsServiceCache;
+  }
 
-    this.s3Service = new S3Service(s3);
-    this.documentService =
-        new DocumentServiceImpl(dbBuilder, map.get("DOCUMENTS_TABLE"), versionService);
-    this.actionsService = new ActionsServiceDynamoDb(dbBuilder, map.get("DOCUMENTS_TABLE"));
-    String snsDocumentEvent = map.get("SNS_DOCUMENT_EVENT");
-    this.notificationService = new ActionsNotificationServiceImpl(snsDocumentEvent, sns);
+  private Map<String, Object> buildAddOcrPayload(final Action action) {
+    Map<String, String> parameters =
+        action.parameters() != null ? action.parameters() : new HashMap<>();
 
-    String appEnvironment = map.get("APP_ENVIRONMENT");
-    final int cacheTime = 5;
-    SsmService ssmService = new SsmServiceCache(ssm, cacheTime, TimeUnit.MINUTES);
+    String addPdfDetectedCharactersAsText =
+        parameters.getOrDefault("addPdfDetectedCharactersAsText", "false");
+    String ocrEngine = parameters.get("ocrEngine");
 
-    this.documentsIamUrl =
-        ssmService.getParameterValue("/formkiq/" + appEnvironment + "/api/DocumentsIamUrl");
-    this.documentsBucket =
-        ssmService.getParameterValue("/formkiq/" + appEnvironment + "/s3/DocumentsS3Bucket");
-    this.ocrBucket = ssmService.getParameterValue("/formkiq/" + appEnvironment + "/s3/OcrBucket");
+    Map<String, Object> payload = new HashMap<String, Object>();
 
-    this.fkqConnection = new FormKiqClientConnection(this.documentsIamUrl).region(awsRegion);
+    List<String> parseTypes = getOcrParseTypes(action);
+    payload.put("parseTypes", parseTypes);
+    payload.put("addPdfDetectedCharactersAsText",
+        Boolean.valueOf("true".equals(addPdfDetectedCharactersAsText)));
 
-    if (awsCredentials != null) {
-      this.fkqConnection = this.fkqConnection.credentials(awsCredentials);
+    if (!isEmpty(ocrEngine)) {
+      payload.put("ocrEngine", ocrEngine);
     }
-
-    this.formkiqClient = new FormKiqClientV1(this.fkqConnection);
+    return payload;
   }
 
   /**
@@ -195,13 +223,19 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
   private String buildWebhookBody(final String siteId, final String documentId,
       final List<Action> actions) {
 
-    String site = siteId != null ? siteId : SiteIdKeyGenerator.DEFAULT_SITE_ID;
+    DocumentService documentService = serviceCache.getExtension(DocumentService.class);
 
-    List<Map<String, String>> documents = new ArrayList<>();
-    Map<String, String> map = new HashMap<>();
-    map.put("siteId", site);
-    map.put("documentId", documentId);
-    documents.add(map);
+    DocumentItem result = documentService.findDocument(siteId, documentId);
+    DynamicDocumentItem item = new DocumentItemToDynamicDocumentItem().apply(result);
+
+    String site = siteId != null ? siteId : SiteIdKeyGenerator.DEFAULT_SITE_ID;
+    item.put("siteId", site);
+
+    URL s3Url = getS3Url(siteId, documentId, item);
+    item.put("url", s3Url);
+
+    List<DynamicDocumentItem> documents = new ArrayList<>();
+    documents.add(item);
 
     Optional<Action> antiVirus = actions.stream()
         .filter(
@@ -210,10 +244,7 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
 
     if (antiVirus.isPresent()) {
 
-      DocumentItem item = this.documentService.findDocument(siteId, documentId);
-      map.put("filename", item.getPath());
-
-      Map<String, Collection<DocumentTag>> tagMap = this.documentService.findDocumentsTags(siteId,
+      Map<String, Collection<DocumentTag>> tagMap = documentService.findDocumentsTags(siteId,
           Arrays.asList(documentId), Arrays.asList("CLAMAV_SCAN_STATUS", "CLAMAV_SCAN_TIMESTAMP"));
 
       Map<String, String> values = new HashMap<>();
@@ -223,108 +254,153 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
       }
 
       String status = values.getOrDefault("CLAMAV_SCAN_STATUS", "ERROR");
-      map.put("status", status);
+      item.put("status", status);
 
       String timestamp = values.getOrDefault("CLAMAV_SCAN_TIMESTAMP", "");
-      map.put("timestamp", timestamp);
+      item.put("timestamp", timestamp);
     }
 
     return this.gson.toJson(Map.of("documents", documents));
   }
 
-  /**
-   * Find Content Url.
-   * 
-   * @param siteId {@link String}
-   * @param item {@link DocumentItem}
-   * @return {@link List} {@link String}
-   * @throws InterruptedException InterruptedException
-   * @throws IOException IOException
-   */
-  @SuppressWarnings("unchecked")
-  private List<String> findContentUrls(final String siteId, final DocumentItem item)
-      throws IOException, InterruptedException {
+  private void debug(final LambdaLogger logger, final String siteId, final DocumentItem item) {
+    if (isDebug()) {
+      String s = String.format(
+          "{\"siteId\": \"%s\",\"documentId\": \"%s\",\"path\": \"%s\",\"userId\": \"%s\","
+              + "\"s3Version\": \"%s\",\"contentType\": \"%s\"}",
+          siteId, item.getDocumentId(), item.getPath(), item.getUserId(), item.getS3version(),
+          item.getContentType());
 
-    List<String> urls = null;
-    String documentId = item.getDocumentId();
-    String s3Key = SiteIdKeyGenerator.createS3Key(siteId, documentId);
-
-    if (MimeType.isPlainText(item.getContentType())) {
-
-      PresignGetUrlConfig config = new PresignGetUrlConfig()
-          .contentDispositionByPath(item.getPath(), false).contentType(item.getContentType());
-
-      String bucket =
-          MimeType.isPlainText(item.getContentType()) ? this.documentsBucket : this.ocrBucket;
-
-      String url =
-          this.s3Service.presignGetUrl(bucket, s3Key, Duration.ofHours(1), null, config).toString();
-      urls = Arrays.asList(url);
-
-    } else {
-
-      GetDocumentOcrRequest req = new GetDocumentOcrRequest().siteId(siteId).documentId(documentId);
-
-      req.addQueryParameter("contentUrl", "true");
-      req.addQueryParameter("text", "true");
-
-      HttpResponse<String> response = this.formkiqClient.getDocumentOcrAsHttpResponse(req);
-      Map<String, Object> map = this.gson.fromJson(response.body(), Map.class);
-
-      if (map != null && map.containsKey("contentUrls")) {
-        urls = (List<String>) map.get("contentUrls");
-      }
+      logger.log(s);
     }
+  }
 
-    return urls;
+  private ActionsService getActionsService() {
+    ActionsService actionsService = serviceCache.getExtension(ActionsService.class);
+    return actionsService;
+  }
+
+  private int getCharacterMax(final Action action) {
+    Map<String, String> parameters = notNull(action.parameters());
+    return parameters.containsKey("characterMax") ? -1 : DEFAULT_TYPESENSE_CHARACTER_MAX;
+  }
+
+  /**
+   * Get Content from {@link Action}.
+   * 
+   * @param dcFunc {@link DocumentContentFunction}
+   * @param action {@link Action}
+   * @param contentUrls {@link List} {@link String}
+   * @return {@link String}
+   * @throws URISyntaxException URISyntaxException
+   * @throws IOException IOException
+   * @throws InterruptedException InterruptedException
+   */
+  private String getContent(final DocumentContentFunction dcFunc, final Action action,
+      final List<String> contentUrls) throws URISyntaxException, IOException, InterruptedException {
+
+    StringBuilder sb = dcFunc.getContentUrls(contentUrls);
+
+    int characterMax = getCharacterMax(action);
+
+    String content =
+        characterMax != -1 && sb.length() > characterMax ? sb.substring(0, characterMax)
+            : sb.toString();
+
+    return content;
+  }
+
+  private ActionsNotificationService getNotificationService() {
+    ActionsNotificationService notificationService =
+        serviceCache.getExtension(ActionsNotificationService.class);
+    return notificationService;
   }
 
   /**
    * Get ParseTypes from {@link Action} parameters.
    * 
    * @param action {@link Action}
-   * @return {@link List} {@link OcrParseType}
+   * @return {@link List} {@link String}
    */
-  List<OcrParseType> getOcrParseTypes(final Action action) {
+  List<String> getOcrParseTypes(final Action action) {
 
     Map<String, String> parameters = notNull(action.parameters());
     String s = parameters.containsKey("parseTypes") ? parameters.get("parseTypes") : "TEXT";
 
-    List<OcrParseType> ocrParseTypes = Arrays.asList(s.split(",")).stream().map(t -> {
-      try {
-        return OcrParseType.valueOf(t.trim().toUpperCase());
-      } catch (IllegalArgumentException e) {
-        e.printStackTrace();
-        return OcrParseType.TEXT;
-      }
+    List<String> ocrParseTypes = Arrays.asList(s.split(",")).stream().map(t -> {
+      return t.trim().toUpperCase();
     }).distinct().collect(Collectors.toList());
 
     return ocrParseTypes;
+  }
+
+  /**
+   * Get Document S3 Url.
+   * 
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param item {@link DocumentItem}
+   * @return {@link URL}
+   */
+  private URL getS3Url(final String siteId, final String documentId, final DocumentItem item) {
+
+    String documentsBucket = serviceCache.environment("DOCUMENTS_S3_BUCKET");
+    Duration duration = Duration.ofDays(1);
+    PresignGetUrlConfig config =
+        new PresignGetUrlConfig().contentDispositionByPath(item.getPath(), false);
+    String s3key = createS3Key(siteId, documentId);
+
+    S3PresignerService s3Presigner = serviceCache.getExtension(S3PresignerService.class);
+    return s3Presigner.presignGetUrl(documentsBucket, s3key, duration, null, config);
   }
 
   @SuppressWarnings("unchecked")
   @Override
   public Void handleRequest(final Map<String, Object> map, final Context context) {
 
-    String json = null;
+    LambdaLogger logger = context.getLogger();
 
+    if (isDebug()) {
+      String json = this.gson.toJson(map);
+      logger.log(json);
+    }
+
+    List<Map<String, Object>> records = (List<Map<String, Object>>) map.get("Records");
     try {
-
-      LambdaLogger logger = context.getLogger();
-
-      if ("true".equals(System.getenv("DEBUG"))) {
-        json = this.gson.toJson(map);
-        logger.log(json);
-      }
-
-      List<Map<String, Object>> records = (List<Map<String, Object>>) map.get("Records");
       processRecords(logger, records);
-
-    } catch (Exception e) {
+    } catch (IOException | InterruptedException e) {
       e.printStackTrace();
+      throw new RuntimeException(e);
     }
 
     return null;
+  }
+
+  private boolean isDebug() {
+    return serviceCache.debug();
+  }
+
+  /**
+   * Log Start of {@link Action}.
+   * 
+   * @param logger {@link LambdaLogger}
+   * @param type {@link String}
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param action {@link Action}
+   */
+  private void logAction(final LambdaLogger logger, final String type, final String siteId,
+      final String documentId, final Action action) {
+
+    if (isDebug()) {
+      String s = String.format(
+          "{\"type\",\"%s\",\"siteId\":\"%s\",\"documentId\":\"%s\",\"actionType\":\"%s\","
+              + "\"actionStatus\":\"%s\",\"userId\":\"%s\",\"parameters\": \"%s\"}",
+          type, siteId, documentId, action.type(), action.status(), action.userId(),
+          action.parameters());
+
+      logger.log(s);
+    }
   }
 
   /**
@@ -333,57 +409,62 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
    * @param logger {@link LambdaLogger}
    * @param siteId {@link String}
    * @param documentId {@link String}
+   * @param actions {@link List} {@link Action}
    * @param action {@link Action}
    * @throws IOException IOException
    * @throws InterruptedException InterruptedException
    */
   private void processAction(final LambdaLogger logger, final String siteId,
-      final String documentId, final Action action) throws IOException, InterruptedException {
+      final String documentId, final List<Action> actions, final Action action)
+      throws IOException, InterruptedException {
 
-    if (ActionType.OCR.equals(action.type())) {
+    boolean updateComplete = false;
+    ActionStatus completeStatus = ActionStatus.COMPLETE;
 
-      List<OcrParseType> parseTypes = getOcrParseTypes(action);
-      Map<String, String> parameters =
-          action.parameters() != null ? action.parameters() : new HashMap<>();
-      String addPdfDetectedCharactersAsText =
-          parameters.getOrDefault("addPdfDetectedCharactersAsText", "false");
+    logAction(logger, "action start", siteId, documentId, action);
 
-      this.formkiqClient.addDocumentOcr(
-          new AddDocumentOcrRequest().siteId(siteId).documentId(documentId).parseTypes(parseTypes)
-              .addPdfDetectedCharactersAsText("true".equals(addPdfDetectedCharactersAsText)));
+    if (ActionType.QUEUE.equals(action.type())) {
+
+      completeStatus = ActionStatus.IN_QUEUE;
+      updateComplete = true;
+
+    } else if (ActionType.DOCUMENTTAGGING.equals(action.type())) {
+
+      DocumentTaggingAction dtAction = new DocumentTaggingAction(serviceCache);
+      dtAction.run(logger, siteId, documentId, action);
+
+      updateComplete = true;
+
+    } else if (ActionType.OCR.equals(action.type())) {
+
+      Map<String, Object> payload = buildAddOcrPayload(action);
+
+      sendRequest(siteId, "post", "/documents/" + documentId + "/ocr", this.gson.toJson(payload));
 
     } else if (ActionType.FULLTEXT.equals(action.type())) {
 
-      DocumentItem item = this.documentService.findDocument(siteId, documentId);
-      List<String> contentUrls = findContentUrls(siteId, item);
-
-      final int maxTags = 100;
-      PaginationResults<DocumentTag> docTags =
-          this.documentService.findDocumentTags(siteId, documentId, null, maxTags);
-
-      List<UpdateFulltextTag> tags =
-          docTags.getResults().stream().filter(t -> DocumentTagType.USERDEFINED.equals(t.getType()))
-              .map(t -> new UpdateFulltextTag().key(t.getKey()).value(t.getValue())
-                  .values(t.getValues()))
-              .collect(Collectors.toList());
-
-      SetDocumentFulltext fulltext =
-          new SetDocumentFulltext().contentUrls(contentUrls).path(item.getPath()).tags(tags);
-
-      SetDocumentFulltextRequest req =
-          new SetDocumentFulltextRequest().siteId(siteId).documentId(documentId).document(fulltext);
-
-      this.formkiqClient.setDocumentFulltext(req);
+      processFulltext(logger, siteId, documentId, actions, action);
 
     } else if (ActionType.ANTIVIRUS.equals(action.type())) {
 
-      SetDocumentAntivirusRequest req =
-          new SetDocumentAntivirusRequest().siteId(siteId).documentId(documentId);
-      this.formkiqClient.setDocumentAntivirus(req);
+      sendRequest(siteId, "PUT", "/documents/" + documentId + "/antivirus", "");
 
     } else if (ActionType.WEBHOOK.equals(action.type())) {
 
-      sendWebhook(siteId, documentId, action);
+      sendWebhook(logger, siteId, documentId, actions, action);
+
+    } else if (ActionType.NOTIFICATION.equals(action.type())) {
+
+      DocumentAction da = new NotificationAction(siteId, serviceCache);
+      da.run(logger, siteId, documentId, action);
+
+      updateComplete = true;
+    }
+
+    logAction(logger, "action complete", siteId, documentId, action);
+
+    if (updateComplete) {
+      updateComplete(logger, siteId, documentId, actions, action, completeStatus);
     }
   }
 
@@ -395,38 +476,50 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
    * @throws InterruptedException InterruptedException
    * @throws IOException IOException
    */
-  private void processEvent(final LambdaLogger logger, final DocumentEvent event)
+  public void processEvent(final LambdaLogger logger, final DocumentEvent event)
       throws IOException, InterruptedException {
+
+    ActionsService actionsService = getActionsService();
 
     if (ACTIONS.equals(event.type())) {
 
       String siteId = event.siteId();
       String documentId = event.documentId();
 
-      List<Action> actions = this.actionsService.getActions(siteId, documentId);
-      Optional<Action> o = actions.stream().filter(new NextActionPredicate()).findFirst();
+      List<Action> actions = actionsService.getActions(siteId, documentId);
 
-      if (o.isPresent()) {
+      Optional<Action> running =
+          actions.stream().filter(new ActionStatusPredicate(ActionStatus.RUNNING)).findAny();
+      Optional<Action> o =
+          actions.stream().filter((new ActionStatusPredicate(ActionStatus.PENDING))).findFirst();
+
+      if (running.isPresent()) {
+
+        logger.log(
+            String.format("ACTIONS already RUNNING for SiteId %s Document %s", siteId, documentId));
+
+      } else if (o.isPresent()) {
 
         Action action = o.get();
-        ActionStatus status = ActionStatus.RUNNING;
+        action.status(ActionStatus.RUNNING);
 
-        logger.log(String.format("Processing SiteId %s Document %s on action %s", siteId,
-            documentId, action.type()));
-
-        this.actionsService.updateActionStatus(siteId, documentId, o.get().type(), status);
+        actionsService.updateActionStatus(siteId, documentId, action);
 
         try {
-          processAction(logger, siteId, documentId, action);
+
+          processAction(logger, siteId, documentId, actions, action);
 
         } catch (Exception e) {
           e.printStackTrace();
-          status = ActionStatus.FAILED;
-          action.status(status);
+          action.status(ActionStatus.FAILED);
+          action.message(e.getMessage());
 
-          this.actionsService.updateActionStatus(siteId, documentId, o.get().type(), status);
+          updateDocumentWorkflow(siteId, documentId, action);
+
+          logger.log(String.format("Updating Action Status to %s", action.status()));
+
+          actionsService.updateActionStatus(siteId, documentId, action);
         }
-
 
       } else {
         logger
@@ -435,6 +528,57 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
     } else {
       logger.log(String.format("Skipping event %s", event.type()));
     }
+  }
+
+  private void processFulltext(final LambdaLogger logger, final String siteId,
+      final String documentId, final List<Action> actions, final Action action)
+      throws IOException, InterruptedException {
+
+    ActionsService actionsService = getActionsService();
+    DocumentService documentService = serviceCache.getExtension(DocumentService.class);
+
+    ActionStatus status = ActionStatus.PENDING;
+    DocumentItem item = documentService.findDocument(siteId, documentId);
+    debug(logger, siteId, item);
+
+    DocumentContentFunction documentContentFunc = new DocumentContentFunction(serviceCache);
+
+    List<String> contentUrls =
+        documentContentFunc.getContentUrls(isDebug() ? logger : null, siteId, item);
+
+    if (contentUrls.size() > 0) {
+      boolean moduleFulltext = serviceCache.hasModule("opensearch");
+      boolean moduleTypesense = serviceCache.hasModule("typesense");
+
+      if (moduleFulltext) {
+        updateOpensearchFulltext(logger, siteId, documentId, action, contentUrls);
+        status = ActionStatus.COMPLETE;
+      }
+
+      if (moduleTypesense) {
+        updateTypesense(documentContentFunc, siteId, documentId, action, contentUrls);
+        status = ActionStatus.COMPLETE;
+      }
+
+      if (!ActionStatus.COMPLETE.equals(status)) {
+        status = ActionStatus.FAILED;
+      }
+
+    } else if (actions.stream().filter(a -> a.type().equals(ActionType.OCR)).findAny().isEmpty()) {
+
+      Action ocrAction = new Action().userId("System").type(ActionType.OCR)
+          .parameters(Map.of("ocrEngine", "tesseract"));
+      actionsService.insertBeforeAction(siteId, documentId, actions, action, ocrAction);
+
+      ActionsNotificationService notificationService = getNotificationService();
+      notificationService.publishNextActionEvent(siteId, documentId);
+
+    } else {
+      throw new IOException("no OCR document found");
+    }
+
+    action.status(status);
+    actionsService.updateActionStatus(siteId, documentId, action);
   }
 
   /**
@@ -459,27 +603,67 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
         if (map.containsKey("Message")) {
           DocumentEvent event =
               this.gson.fromJson(map.get("Message").toString(), DocumentEvent.class);
+
+          String s = String.format(
+              "{\"siteId\": \"%s\",\"documentId\": \"%s\",\"s3key\": \"%s\",\"s3bucket\": \"%s\","
+                  + "\"type\": \"%s\",\"userId\": %s,"
+                  + "\"contentType\": \"%s\",\"path\":\"%s\",\"content\":%s}",
+              event.siteId(), event.documentId(), event.s3key(), event.s3bucket(), event.type(),
+              event.userId(), event.contentType(), event.path(), event.content());
+
+          logger.log(s);
           processEvent(logger, event);
         }
       }
     }
   }
 
+  private HttpResponse<String> sendRequest(final String siteId, final String method,
+      final String url, final String payload) throws IOException {
+
+    HttpResponse<String> response = null;
+    HttpService http = serviceCache.getExtension(HttpService.class);
+
+    String u = serviceCache.environment("documentsIamUrl") + url;
+
+    Optional<Map<String, String>> parameters = Optional.empty();
+
+    if (siteId != null) {
+      parameters = Optional.of(Map.of("siteId", siteId));
+    }
+
+    if ("put".equalsIgnoreCase(method)) {
+      response = http.put(u, Optional.empty(), parameters, payload);
+    } else if ("post".equalsIgnoreCase(method)) {
+      response = http.post(u, Optional.empty(), parameters, payload);
+    } else if ("patch".equalsIgnoreCase(method)) {
+      response = http.patch(u, Optional.empty(), parameters, payload);
+    } else {
+      throw new UnsupportedOperationException("unsupported method '" + method + "'");
+    }
+
+    if (!HttpResponseStatus.is2XX(response)) {
+      throw new IOException(url + " returned " + response.statusCode());
+    }
+
+    return response;
+  }
+
   /**
    * Sends Webhook.
    * 
+   * @param logger {@link LambdaLogger}
    * @param siteId {@link String}
    * @param documentId {@link String}
+   * @param actions {@link List} {@link Action}
    * @param action {@link Action}
    * @throws IOException IOException
    * @throws InterruptedException InterruptedException
    */
-  private void sendWebhook(final String siteId, final String documentId, final Action action)
-      throws IOException, InterruptedException {
+  private void sendWebhook(final LambdaLogger logger, final String siteId, final String documentId,
+      final List<Action> actions, final Action action) throws IOException, InterruptedException {
 
     String url = action.parameters().get("url");
-
-    List<Action> actions = this.actionsService.getActions(siteId, documentId);
 
     String body = buildWebhookBody(siteId, documentId, actions);
 
@@ -498,16 +682,107 @@ public class DocumentActionsProcessor implements RequestHandler<Map<String, Obje
 
       if (statusCode >= statusOk && statusCode < statusRedirect) {
 
-        List<Action> updatedActions = this.actionsService.updateActionStatus(siteId, documentId,
-            ActionType.WEBHOOK, ActionStatus.COMPLETE);
-
-        this.notificationService.publishNextActionEvent(updatedActions, siteId, documentId);
+        updateComplete(logger, siteId, documentId, actions, action, ActionStatus.COMPLETE);
 
       } else {
         throw new IOException(url + " response status code " + statusCode);
       }
 
     } catch (URISyntaxException e) {
+      throw new IOException(e);
+    }
+  }
+
+  /**
+   * Update Complete Action.
+   * 
+   * @param logger {@link LambdaLogger}
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param actions {@link List} {@link Action}
+   * @param action {@link Action}
+   * @param completeStatus {@link ActionStatus}
+   */
+  private void updateComplete(final LambdaLogger logger, final String siteId,
+      final String documentId, final List<Action> actions, final Action action,
+      final ActionStatus completeStatus) {
+
+    if (isDebug()) {
+      logger.log(String.format("updating status of %s to %s", documentId, completeStatus));
+    }
+
+    action.status(completeStatus);
+    getActionsService().updateActionStatus(siteId, documentId, action);
+
+    updateDocumentWorkflow(siteId, documentId, action);
+
+    if (!ActionType.QUEUE.equals(action.type())) {
+      boolean publishNextActionEvent =
+          getNotificationService().publishNextActionEvent(actions, siteId, documentId);
+      if (isDebug() && publishNextActionEvent) {
+        logger.log(String.format("publishing next event for %s to %s", siteId, documentId));
+      }
+    }
+  }
+
+  private void updateDocumentWorkflow(final String siteId, final String documentId,
+      final Action action) {
+
+    if (!isEmpty(action.workflowId()) && !isEmpty(action.workflowStepId())) {
+      getActionsService().updateDocumentWorkflowStatus(siteId, documentId, action);
+    }
+  }
+
+  /**
+   * Update Document Content to Opensearch.
+   * 
+   * @param logger {@link LambdaLogger}
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param action {@link Action}
+   * @param contentUrls {@link List} {@link String}
+   * @throws IOException IOException
+   * @throws InterruptedException InterruptedException
+   */
+  private void updateOpensearchFulltext(final LambdaLogger logger, final String siteId,
+      final String documentId, final Action action, final List<String> contentUrls)
+      throws IOException, InterruptedException {
+
+    Map<String, Object> payload = Map.of("contentUrls", contentUrls);
+    sendRequest(siteId, "patch", "/documents/" + documentId + "/fulltext",
+        this.gson.toJson(payload));
+  }
+
+  /**
+   * Update Typesense Content.
+   * 
+   * @param dcFunc {@link DocumentContentFunction}
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param action {@link Action}
+   * @param contentUrls {@link List} {@link String}
+   * @throws IOException IOException
+   */
+  private void updateTypesense(final DocumentContentFunction dcFunc, final String siteId,
+      final String documentId, final Action action, final List<String> contentUrls)
+      throws IOException {
+
+    TypeSenseService typesense = serviceCache.getExtension(TypeSenseService.class);
+
+    try {
+
+      String content = getContent(dcFunc, action, contentUrls);
+      Map<String, String> data = Map.of("content", content);
+
+      Map<String, Object> document = new DocumentMapToDocument().apply(data);
+
+      HttpResponse<String> response = typesense.addOrUpdateDocument(siteId, documentId, document);
+
+      if (!is2XX(response)) {
+        throw new IOException(response.body());
+      }
+
+    } catch (URISyntaxException | InterruptedException e) {
       throw new IOException(e);
     }
   }

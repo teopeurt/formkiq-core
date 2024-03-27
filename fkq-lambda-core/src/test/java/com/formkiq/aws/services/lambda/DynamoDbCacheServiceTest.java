@@ -23,8 +23,8 @@
  */
 package com.formkiq.aws.services.lambda;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Date;
@@ -54,7 +54,7 @@ public class DynamoDbCacheServiceTest {
   @BeforeEach
   public void before() throws Exception {
     this.service =
-        new DynamoDbCacheService(DynamoDbTestServices.getDynamoDbConnection(null), cacheTable);
+        new DynamoDbCacheService(DynamoDbTestServices.getDynamoDbConnection(), cacheTable);
   }
 
   /**

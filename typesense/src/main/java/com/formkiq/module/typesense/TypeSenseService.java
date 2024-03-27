@@ -57,6 +57,18 @@ public interface TypeSenseService {
       throws IOException;
 
   /**
+   * Add or Update Typesense Document.
+   * 
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param data {@link Map}
+   * @return {@link HttpResponse}
+   * @throws IOException IOException
+   */
+  HttpResponse<String> addOrUpdateDocument(String siteId, String documentId,
+      Map<String, Object> data) throws IOException;
+
+  /**
    * Delete Document.
    * 
    * @param siteId {@link String}
@@ -65,6 +77,16 @@ public interface TypeSenseService {
    * @throws IOException IOException
    */
   HttpResponse<String> deleteDocument(String siteId, String documentId) throws IOException;
+
+  /**
+   * Get Document.
+   * 
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @return {@link HttpResponse}
+   * @throws IOException IOException
+   */
+  HttpResponse<String> getDocument(String siteId, String documentId) throws IOException;
 
   /**
    * Full text search.

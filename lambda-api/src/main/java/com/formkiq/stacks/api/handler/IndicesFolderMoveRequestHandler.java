@@ -30,7 +30,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
@@ -73,12 +73,13 @@ public class IndicesFolderMoveRequestHandler
    * @return {@link ApiRequestHandlerResponse}
    * @throws BadException BadException
    * @throws ValidationException ValidationException
+   * @throws IOException IOException
    */
   private ApiRequestHandlerResponse moveFolderIndex(final LambdaLogger logger,
       final ApiGatewayRequestEvent event, final AwsServiceCache awsServices, final String siteId,
-      final String userId) throws BadException, ValidationException {
+      final String userId) throws BadException, ValidationException, IOException {
 
-    Map<String, Object> body = fromBodyToMap(logger, event);
+    Map<String, Object> body = fromBodyToMap(event);
 
     Collection<ValidationError> errors = validation(body);
     if (!errors.isEmpty()) {
@@ -101,11 +102,11 @@ public class IndicesFolderMoveRequestHandler
 
   @Override
   public ApiRequestHandlerResponse post(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsServices) throws Exception {
 
-    String siteId = authorizer.getSiteId();
-    String userId = getCallingCognitoUsername(event);
+    String siteId = authorization.siteId();
+    String userId = authorization.username();
     String type = event.getPathParameters().get("indexType");
 
     if ("folder".equals(type)) {

@@ -26,50 +26,69 @@ package com.formkiq.stacks.api;
 import java.util.HashMap;
 import java.util.Map;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
-import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
-import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilderExtension;
-import com.formkiq.aws.s3.S3ConnectionBuilder;
+import com.formkiq.aws.cognito.CognitoIdentityProviderService;
+import com.formkiq.aws.cognito.CognitoIdentityProviderServiceExtension;
+import com.formkiq.aws.dynamodb.DynamoDbService;
+import com.formkiq.aws.dynamodb.DynamoDbServiceExtension;
+import com.formkiq.aws.s3.S3PresignerService;
+import com.formkiq.aws.s3.S3PresignerServiceExtension;
 import com.formkiq.aws.s3.S3Service;
 import com.formkiq.aws.s3.S3ServiceExtension;
 import com.formkiq.aws.services.lambda.AbstractRestApiRequestHandler;
-import com.formkiq.aws.services.lambda.ApiAuthorizerType;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
 import com.formkiq.aws.services.lambda.LambdaInputRecord;
 import com.formkiq.aws.services.lambda.exceptions.NotFoundException;
 import com.formkiq.aws.services.lambda.services.CacheService;
-import com.formkiq.aws.services.lambda.services.ConfigService;
-import com.formkiq.aws.services.lambda.services.ConfigServiceExtension;
 import com.formkiq.aws.services.lambda.services.DynamoDbCacheServiceExtension;
-import com.formkiq.aws.sqs.SqsConnectionBuilder;
 import com.formkiq.aws.sqs.SqsService;
 import com.formkiq.aws.sqs.SqsServiceExtension;
-import com.formkiq.aws.ssm.SsmConnectionBuilder;
 import com.formkiq.aws.ssm.SsmService;
 import com.formkiq.aws.ssm.SsmServiceExtension;
+import com.formkiq.module.actions.services.ActionsNotificationService;
+import com.formkiq.module.actions.services.ActionsNotificationServiceExtension;
 import com.formkiq.module.actions.services.ActionsService;
 import com.formkiq.module.actions.services.ActionsServiceExtension;
+import com.formkiq.module.events.EventService;
+import com.formkiq.module.events.EventServiceSnsExtension;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
-import com.formkiq.module.lambdaservices.ClassServiceExtension;
+import com.formkiq.module.ocr.DocumentOcrService;
+import com.formkiq.module.ocr.DocumentOcrServiceExtension;
+import com.formkiq.module.ocr.DocumentsOcrRequestHandler;
+import com.formkiq.module.typesense.TypeSenseService;
+import com.formkiq.module.typesense.TypeSenseServiceExtension;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPlugin;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPluginExtension;
+import com.formkiq.stacks.api.handler.ConfigurationApiKeyRequestHandler;
+import com.formkiq.stacks.api.handler.ConfigurationApiKeysRequestHandler;
+import com.formkiq.stacks.api.handler.ConfigurationRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentIdContentRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentIdRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentIdRestoreRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentIdUrlRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentPermissionsKeyRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentPermissionsRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentTagRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentTagValueRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentTagsRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentVersionsKeyRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentVersionsRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsActionsRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentsActionsRetryRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentsCompressRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsFulltextRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsFulltextRequestTagsKeyHandler;
 import com.formkiq.stacks.api.handler.DocumentsFulltextRequestTagsKeyValueHandler;
 import com.formkiq.stacks.api.handler.DocumentsIdUploadRequestHandler;
-import com.formkiq.stacks.api.handler.DocumentsOcrRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsOptionsRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsRequestHandler;
+import com.formkiq.stacks.api.handler.DocumentsSyncsRequestHandler;
 import com.formkiq.stacks.api.handler.DocumentsUploadRequestHandler;
 import com.formkiq.stacks.api.handler.EsignatureDocusignConfigRequestHandler;
 import com.formkiq.stacks.api.handler.EsignatureDocusignDocumentIdRequestHandler;
+import com.formkiq.stacks.api.handler.FoldersIndexKeyRequestHandler;
+import com.formkiq.stacks.api.handler.FoldersRequestHandler;
+import com.formkiq.stacks.api.handler.GroupsRequestHandler;
+import com.formkiq.stacks.api.handler.GroupsUsersRequestHandler;
 import com.formkiq.stacks.api.handler.IndicesFolderMoveRequestHandler;
 import com.formkiq.stacks.api.handler.IndicesRequestHandler;
 import com.formkiq.stacks.api.handler.IndicesSearchRequestHandler;
@@ -79,28 +98,42 @@ import com.formkiq.stacks.api.handler.OnlyOfficeSaveRequestHandler;
 import com.formkiq.stacks.api.handler.PrivateWebhooksRequestHandler;
 import com.formkiq.stacks.api.handler.PublicDocumentsRequestHandler;
 import com.formkiq.stacks.api.handler.PublicWebhooksRequestHandler;
+import com.formkiq.stacks.api.handler.QueueDocumentsRequestHandler;
+import com.formkiq.stacks.api.handler.QueueIdRequestHandler;
+import com.formkiq.stacks.api.handler.QueuesRequestHandler;
 import com.formkiq.stacks.api.handler.SearchFulltextRequestHandler;
 import com.formkiq.stacks.api.handler.SearchRequestHandler;
 import com.formkiq.stacks.api.handler.SitesRequestHandler;
 import com.formkiq.stacks.api.handler.TagSchemasIdRequestHandler;
 import com.formkiq.stacks.api.handler.TagSchemasRequestHandler;
+import com.formkiq.stacks.api.handler.UpdateDocumentMatchingRequestHandler;
+import com.formkiq.stacks.api.handler.UserActivitiesDocumentIdRequestHandler;
+import com.formkiq.stacks.api.handler.UserActivitiesRequestHandler;
 import com.formkiq.stacks.api.handler.VersionRequestHandler;
 import com.formkiq.stacks.api.handler.WebhooksIdRequestHandler;
 import com.formkiq.stacks.api.handler.WebhooksRequestHandler;
 import com.formkiq.stacks.api.handler.WebhooksTagsRequestHandler;
-import com.formkiq.stacks.client.FormKiqClientV1;
+import com.formkiq.stacks.api.handler.WorkflowDocumentsRequestHandler;
+import com.formkiq.stacks.api.handler.WorkflowsIdRequestHandler;
+import com.formkiq.stacks.api.handler.WorkflowsRequestHandler;
+import com.formkiq.stacks.dynamodb.ApiKeysService;
+import com.formkiq.stacks.dynamodb.ApiKeysServiceExtension;
+import com.formkiq.stacks.dynamodb.ConfigService;
+import com.formkiq.stacks.dynamodb.ConfigServiceExtension;
 import com.formkiq.stacks.dynamodb.DocumentCountService;
 import com.formkiq.stacks.dynamodb.DocumentCountServiceExtension;
 import com.formkiq.stacks.dynamodb.DocumentSearchService;
 import com.formkiq.stacks.dynamodb.DocumentSearchServiceExtension;
 import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.stacks.dynamodb.DocumentServiceExtension;
+import com.formkiq.stacks.dynamodb.DocumentSyncService;
+import com.formkiq.stacks.dynamodb.DocumentSyncServiceExtension;
 import com.formkiq.stacks.dynamodb.DocumentVersionService;
 import com.formkiq.stacks.dynamodb.DocumentVersionServiceExtension;
 import com.formkiq.stacks.dynamodb.FolderIndexProcessor;
-import com.formkiq.stacks.dynamodb.IndexProcessorExtension;
-import software.amazon.awssdk.auth.credentials.AwsCredentials;
-import software.amazon.awssdk.regions.Region;
+import com.formkiq.stacks.dynamodb.FolderIndexProcessorExtension;
+import com.formkiq.stacks.dynamodb.WebhooksService;
+import com.formkiq.stacks.dynamodb.WebhooksServiceExtension;
 
 /**
  * 
@@ -111,10 +144,19 @@ public abstract class AbstractCoreRequestHandler extends AbstractRestApiRequestH
 
   /** Is Public Urls Enabled. */
   private static boolean isEnablePublicUrls;
-  /** {@link AwsServiceCache}. */
-  private static AwsServiceCache awsServices;
   /** Url Class Map. */
   private static final Map<String, ApiGatewayRequestHandler> URL_MAP = new HashMap<>();
+
+  private static void addGroupUsersEndpoints() {
+    addRequestHandler(new GroupsRequestHandler());
+    addRequestHandler(new GroupsUsersRequestHandler());
+  }
+
+  private static void addOnlyOfficeEndpoints() {
+    addRequestHandler(new OnlyOfficeNewRequestHandler());
+    addRequestHandler(new OnlyOfficeSaveRequestHandler());
+    addRequestHandler(new OnlyOfficeEditRequestHandler());
+  }
 
   /**
    * Add Url Request Handler Mapping.
@@ -125,16 +167,39 @@ public abstract class AbstractCoreRequestHandler extends AbstractRestApiRequestH
     URL_MAP.put(handler.getRequestUrl(), handler);
   }
 
+  private static void addUserActivitiesEndpoints() {
+    addRequestHandler(new UserActivitiesRequestHandler());
+    addRequestHandler(new UserActivitiesDocumentIdRequestHandler());
+  }
+
+  private static void addWorkflowEndpoints() {
+    addRequestHandler(new WorkflowsRequestHandler());
+    addRequestHandler(new WorkflowsIdRequestHandler());
+    addRequestHandler(new QueuesRequestHandler());
+    addRequestHandler(new QueueIdRequestHandler());
+    addRequestHandler(new QueueDocumentsRequestHandler());
+    addRequestHandler(new WorkflowDocumentsRequestHandler());
+  }
+
   /**
    * Build Core UrlMap.
    */
-  public static void buildUrlMap() {
+  private static void buildUrlMap() {
     URL_MAP.put("options", new DocumentsOptionsRequestHandler());
     addRequestHandler(new VersionRequestHandler());
     addRequestHandler(new SitesRequestHandler());
+    addRequestHandler(new ConfigurationRequestHandler());
+    addRequestHandler(new ConfigurationApiKeysRequestHandler());
+    addRequestHandler(new ConfigurationApiKeyRequestHandler());
     addRequestHandler(new DocumentVersionsRequestHandler());
+    addRequestHandler(new DocumentVersionsKeyRequestHandler());
+    addRequestHandler(new DocumentPermissionsRequestHandler());
+    addRequestHandler(new DocumentPermissionsKeyRequestHandler());
     addRequestHandler(new DocumentTagsRequestHandler());
     addRequestHandler(new DocumentsActionsRequestHandler());
+    addRequestHandler(new DocumentsActionsRetryRequestHandler());
+    addRequestHandler(new FoldersRequestHandler());
+    addRequestHandler(new FoldersIndexKeyRequestHandler());
     addRequestHandler(new DocumentTagValueRequestHandler());
     addRequestHandler(new DocumentTagRequestHandler());
     addRequestHandler(new DocumentIdUrlRequestHandler());
@@ -146,6 +211,7 @@ public abstract class AbstractCoreRequestHandler extends AbstractRestApiRequestH
     addRequestHandler(new DocumentsUploadRequestHandler());
     addRequestHandler(new DocumentsIdUploadRequestHandler());
     addRequestHandler(new DocumentsOcrRequestHandler());
+    addRequestHandler(new DocumentsSyncsRequestHandler());
     addRequestHandler(new DocumentsFulltextRequestHandler());
     addRequestHandler(new TagSchemasRequestHandler());
     addRequestHandler(new TagSchemasIdRequestHandler());
@@ -154,71 +220,83 @@ public abstract class AbstractCoreRequestHandler extends AbstractRestApiRequestH
     addRequestHandler(new WebhooksRequestHandler());
     addRequestHandler(new DocumentsRequestHandler());
     addRequestHandler(new DocumentIdRequestHandler());
-    addRequestHandler(new OnlyOfficeNewRequestHandler());
-    addRequestHandler(new OnlyOfficeSaveRequestHandler());
-    addRequestHandler(new OnlyOfficeEditRequestHandler());
+    addRequestHandler(new DocumentIdRestoreRequestHandler());
+    addRequestHandler(new DocumentsCompressRequestHandler());
     addRequestHandler(new IndicesFolderMoveRequestHandler());
     addRequestHandler(new IndicesRequestHandler());
     addRequestHandler(new IndicesSearchRequestHandler());
     addRequestHandler(new EsignatureDocusignDocumentIdRequestHandler());
     addRequestHandler(new EsignatureDocusignConfigRequestHandler());
+    addRequestHandler(new UpdateDocumentMatchingRequestHandler());
+    addOnlyOfficeEndpoints();
+    addGroupUsersEndpoints();
+    addWorkflowEndpoints();
+    addUserActivitiesEndpoints();
   }
 
   /**
-   * Setup Api Request Handlers.
-   *
-   * @param map {@link Map}
-   * @param creds {@link AwsCredentials}
-   * @param db {@link DynamoDbConnectionBuilder}
-   * @param s3 {@link S3ConnectionBuilder}
-   * @param ssm {@link SsmConnectionBuilder}
-   * @param sqs {@link SqsConnectionBuilder}
-   * @param schemaEvents {@link DocumentTagSchemaPlugin}
+   * Initialize.
+   * 
+   * @param serviceCache {@link AwsServiceCache}
+   * @param plugin {@link DocumentTagSchemaPlugin}
    */
-  public static void configureHandler(final Map<String, String> map, final AwsCredentials creds,
-      final DynamoDbConnectionBuilder db, final S3ConnectionBuilder s3,
-      final SsmConnectionBuilder ssm, final SqsConnectionBuilder sqs,
-      final DocumentTagSchemaPlugin schemaEvents) {
+  public static void initialize(final AwsServiceCache serviceCache,
+      final DocumentTagSchemaPlugin plugin) {
 
-    AwsServiceCache.register(AwsCredentials.class, new ClassServiceExtension<>(creds));
-    AwsServiceCache.register(DynamoDbConnectionBuilder.class,
-        new DynamoDbConnectionBuilderExtension(db));
-    AwsServiceCache.register(DocumentVersionService.class, new DocumentVersionServiceExtension());
-    AwsServiceCache.register(SsmConnectionBuilder.class,
-        new ClassServiceExtension<SsmConnectionBuilder>(ssm));
-    AwsServiceCache.register(SqsConnectionBuilder.class,
-        new ClassServiceExtension<SqsConnectionBuilder>(sqs));
-    AwsServiceCache.register(ActionsService.class, new ActionsServiceExtension());
-    AwsServiceCache.register(SsmService.class, new SsmServiceExtension());
-    AwsServiceCache.register(S3Service.class, new S3ServiceExtension(s3));
-    AwsServiceCache.register(SqsService.class, new SqsServiceExtension());
-    AwsServiceCache.register(DocumentTagSchemaPlugin.class,
-        new DocumentTagSchemaPluginExtension(schemaEvents));
-    AwsServiceCache.register(CacheService.class, new DynamoDbCacheServiceExtension());
-    AwsServiceCache.register(DocumentService.class, new DocumentServiceExtension());
-    AwsServiceCache.register(DocumentSearchService.class, new DocumentSearchServiceExtension());
-    AwsServiceCache.register(DocumentCountService.class, new DocumentCountServiceExtension());
-    AwsServiceCache.register(FolderIndexProcessor.class, new IndexProcessorExtension());
-    AwsServiceCache.register(ConfigService.class, new ConfigServiceExtension());
+    registerExtensions(serviceCache, plugin);
 
-    Region region = Region.of(map.get("AWS_REGION"));
-    AwsServiceCache.register(FormKiqClientV1.class, new FormKiQClientV1Extension(region, creds));
+    if (serviceCache.hasModule("typesense")) {
+      serviceCache.register(TypeSenseService.class, new TypeSenseServiceExtension());
+    }
 
-    awsServices = new CoreAwsServiceCache().environment(map).debug("true".equals(map.get("DEBUG")));
+    isEnablePublicUrls = isEnablePublicUrls(serviceCache);
 
-    isEnablePublicUrls = isEnablePublicUrls(map);
-
-    setAuthorizerType(ApiAuthorizerType.valueOf(map.get("USER_AUTHENTICATION").toUpperCase()));
+    buildUrlMap();
   }
 
   /**
    * Whether to enable public urls.
-   * 
-   * @param map {@link Map}
+   *
+   * @param serviceCache {@link AwsServiceCache}
    * @return boolean
    */
-  private static boolean isEnablePublicUrls(final Map<String, String> map) {
-    return "true".equals(map.getOrDefault("ENABLE_PUBLIC_URLS", "false"));
+  private static boolean isEnablePublicUrls(final AwsServiceCache serviceCache) {
+    return "true".equals(serviceCache.environment().getOrDefault("ENABLE_PUBLIC_URLS", "false"));
+  }
+
+  /**
+   * Register Extensions.
+   *
+   * @param serviceCache {@link AwsServiceCache}
+   * @param schemaEvents {@link DocumentTagSchemaPlugin}
+   */
+  private static void registerExtensions(final AwsServiceCache serviceCache,
+      final DocumentTagSchemaPlugin schemaEvents) {
+
+    serviceCache.register(CognitoIdentityProviderService.class,
+        new CognitoIdentityProviderServiceExtension());
+    serviceCache.register(DocumentVersionService.class, new DocumentVersionServiceExtension());
+    serviceCache.register(EventService.class, new EventServiceSnsExtension());
+    serviceCache.register(ActionsNotificationService.class,
+        new ActionsNotificationServiceExtension());
+    serviceCache.register(ActionsService.class, new ActionsServiceExtension());
+    serviceCache.register(SsmService.class, new SsmServiceExtension());
+    serviceCache.register(S3Service.class, new S3ServiceExtension());
+    serviceCache.register(S3PresignerService.class, new S3PresignerServiceExtension());
+    serviceCache.register(SqsService.class, new SqsServiceExtension());
+    serviceCache.register(DocumentTagSchemaPlugin.class,
+        new DocumentTagSchemaPluginExtension(schemaEvents));
+    serviceCache.register(CacheService.class, new DynamoDbCacheServiceExtension());
+    serviceCache.register(DocumentService.class, new DocumentServiceExtension());
+    serviceCache.register(DocumentSearchService.class, new DocumentSearchServiceExtension());
+    serviceCache.register(DocumentCountService.class, new DocumentCountServiceExtension());
+    serviceCache.register(FolderIndexProcessor.class, new FolderIndexProcessorExtension());
+    serviceCache.register(ConfigService.class, new ConfigServiceExtension());
+    serviceCache.register(ApiKeysService.class, new ApiKeysServiceExtension());
+    serviceCache.register(DocumentSyncService.class, new DocumentSyncServiceExtension());
+    serviceCache.register(DocumentOcrService.class, new DocumentOcrServiceExtension());
+    serviceCache.register(DynamoDbService.class, new DynamoDbServiceExtension());
+    serviceCache.register(WebhooksService.class, new WebhooksServiceExtension());
   }
 
   /** constructor. */
@@ -250,20 +328,6 @@ public abstract class AbstractCoreRequestHandler extends AbstractRestApiRequestH
     }
 
     throw new NotFoundException(resource + " not found");
-  }
-
-  @Override
-  public AwsServiceCache getAwsServices() {
-    return awsServices;
-  }
-
-  /**
-   * Get {@link AwsServiceCache}.
-   * 
-   * @return {@link AwsServiceCache}
-   */
-  public static AwsServiceCache getAwsServicesCache() {
-    return awsServices;
   }
 
   @Override

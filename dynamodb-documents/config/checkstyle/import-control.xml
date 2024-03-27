@@ -6,7 +6,7 @@
 <import-control pkg="com.formkiq.stacks">
 
 	<subpackage name="dynamodb">
-	
+
 		<allow pkg="software.amazon.awssdk.auth.credentials" />
 		<allow pkg="software.amazon.awssdk.core.client.config" />
 		<allow pkg="software.amazon.awssdk.regions" />
@@ -24,10 +24,14 @@
 		<allow pkg="com.formkiq.stacks.dynamodb" />
 		<allow pkg="com.formkiq.validation" />
 		
+		<allow pkg="com.formkiq.module.events" />
+		<allow pkg="com.formkiq.module.events.folder" />
+
 		<allow pkg="java.io" />
 		<allow pkg="java.lang.reflect" />
 		<allow pkg="java.net" />
 		<allow pkg="java.nio.charset" />
+		<allow pkg="java.security" />
 		<allow pkg="java.text" />
 		<allow pkg="java.time" />
 		<allow pkg="java.util" />

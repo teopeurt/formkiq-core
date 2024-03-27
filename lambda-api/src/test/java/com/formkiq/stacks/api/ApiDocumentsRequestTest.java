@@ -26,11 +26,11 @@ package com.formkiq.stacks.api;
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.DEFAULT_SITE_ID;
 import static com.formkiq.testutils.aws.TestServices.BUCKET_NAME;
 import static com.formkiq.testutils.aws.TestServices.STAGE_BUCKET_NAME;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -59,13 +59,16 @@ import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
 import com.formkiq.aws.dynamodb.model.SearchMetaCriteria;
 import com.formkiq.aws.dynamodb.model.SearchQuery;
+import com.formkiq.aws.dynamodb.objects.DateUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
+import com.formkiq.aws.services.lambda.ApiGatewayRequestEventBuilder;
 import com.formkiq.aws.services.lambda.ApiResponseError;
 import com.formkiq.lambda.apigateway.util.GsonUtil;
-import com.formkiq.module.lambdaservices.AwsServiceCache;
+import com.formkiq.module.actions.Action;
+import com.formkiq.module.actions.ActionType;
+import com.formkiq.module.actions.services.ActionsService;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPlugin;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPluginExtension;
-import com.formkiq.stacks.dynamodb.DateUtil;
 import com.formkiq.stacks.dynamodb.DocumentItemDynamoDb;
 import com.formkiq.stacks.dynamodb.DocumentSearchService;
 import com.formkiq.stacks.dynamodb.DocumentService;
@@ -74,8 +77,8 @@ import com.formkiq.testutils.aws.LocalStackExtension;
 import software.amazon.awssdk.utils.IoUtils;
 
 /** Unit Tests for request GET / POST / DELETE /documents. */
-@ExtendWith(LocalStackExtension.class)
 @ExtendWith(DynamoDbExtension.class)
+@ExtendWith(LocalStackExtension.class)
 public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
   /** One Second. */
@@ -166,11 +169,15 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
       String documentId = UUID.randomUUID().toString();
+
+      DocumentItem item = new DocumentItemDynamoDb(documentId, new Date(), "joe");
+      getDocumentService().saveDocument(siteId, item, null);
+
       String s3Key = SiteIdKeyGenerator.createS3Key(siteId, documentId);
       getS3().putObject(BUCKET_NAME, s3Key, "testdata".getBytes(StandardCharsets.UTF_8), null);
 
       ApiGatewayRequestEvent event = toRequestEvent("/request-delete-documents-documentid01.json");
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
       setPathParameter(event, "documentId", documentId);
 
       // when
@@ -184,7 +191,8 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
       assertEquals("200.0", String.valueOf(m.get("statusCode")));
       assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
 
-      assertFalse(getS3().getObjectMetadata(BUCKET_NAME, s3Key).isObjectExists());
+      assertFalse(getS3().getObjectMetadata(BUCKET_NAME, s3Key, null).isObjectExists());
+      assertNull(getDocumentService().findDocument(siteId, documentId));
     }
   }
 
@@ -193,6 +201,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
    *
    * @throws Exception an error has occurred
    */
+  @SuppressWarnings("unchecked")
   @Test
   public void testHandleDeleteDocument02() throws Exception {
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
@@ -204,14 +213,17 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
       assertNotNull(getDocumentService().findDocument(siteId, documentId));
 
       ApiGatewayRequestEvent event = toRequestEvent("/request-delete-documents-documentid02.json");
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
       setPathParameter(event, "documentId", documentId);
 
       // when
-      handleRequest(event);
+      String response = handleRequest(event);
 
       // then
       assertNull(getDocumentService().findDocument(siteId, documentId));
+
+      Map<String, String> m = fromJson(response, Map.class);
+      assertEquals("200.0", String.valueOf(m.get("statusCode")));
     }
   }
 
@@ -567,7 +579,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
     assertEquals("403.0", String.valueOf(m.get("statusCode")));
     assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
     ApiResponseError resp = fromJson(m.get("body"), ApiResponseError.class);
-    assertEquals("fkq access denied (groups: default)", resp.getMessage());
+    assertEquals("fkq access denied (no groups)", resp.getMessage());
   }
 
   /**
@@ -595,7 +607,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
     assertEquals("403.0", String.valueOf(m.get("statusCode")));
     assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
     ApiResponseError resp = fromJson(m.get("body"), ApiResponseError.class);
-    assertEquals("fkq access denied (groups: default)", resp.getMessage());
+    assertEquals("fkq access denied (groups: default (DELETE,READ,WRITE))", resp.getMessage());
   }
 
   /**
@@ -638,11 +650,11 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   @Test
   public void testHandleGetDocuments11() throws Exception {
     // given
-    String siteId = null;
+    String siteId = "default";
 
     ApiGatewayRequestEvent event = toRequestEvent("/request-get-documents03.json");
     addParameter(event, "siteId", siteId);
-    setCognitoGroup(event, "Finance", "Bleh");
+    setCognitoGroup(event, "Finance Bleh");
 
     // when
     String response = handleRequest(event);
@@ -652,12 +664,10 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
     final int mapsize = 3;
     assertEquals(mapsize, m.size());
-    assertEquals("200.0", String.valueOf(m.get("statusCode")));
+    assertEquals("403.0", String.valueOf(m.get("statusCode")));
     assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
-    DynamicObject resp = new DynamicObject(fromJson(m.get("body"), Map.class));
-
-    List<DynamicObject> documents = resp.getList("documents");
-    assertEquals(0, documents.size());
+    assertEquals("{\"message\":\"fkq access denied "
+        + "(groups: Bleh (DELETE,READ,WRITE), Finance (DELETE,READ,WRITE))\"}", m.get("body"));
   }
 
   /**
@@ -766,6 +776,85 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   }
 
   /**
+   * Get /documents request with "actionStatus".
+   *
+   * @throws Exception an error has occurred
+   */
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testHandleGetDocuments15() throws Exception {
+
+    ActionsService actions = getAwsServices().getExtension(ActionsService.class);
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      Date date = new Date();
+      final long contentLength = 1000L;
+      String username = UUID.randomUUID() + "@formkiq.com";
+      String documentId = UUID.randomUUID().toString();
+      DocumentItemDynamoDb item = new DocumentItemDynamoDb(documentId, date, username);
+      item.setContentLength(Long.valueOf(contentLength));
+
+      ApiGatewayRequestEvent event = toRequestEvent("/request-get-documents.json");
+      addParameter(event, "siteId", siteId);
+      addParameter(event, "actionStatus", "pending");
+
+      getDocumentService().saveDocument(siteId, item, new ArrayList<>());
+      actions.saveAction(siteId,
+          new Action().index("0").type(ActionType.OCR).documentId(documentId).userId("joe"));
+
+      // when
+      String response = handleRequest(event);
+
+      // then
+      Map<String, String> m = fromJson(response, Map.class);
+
+      assertEquals("200.0", String.valueOf(m.get("statusCode")));
+      DynamicObject resp = new DynamicObject(fromJson(m.get("body"), Map.class));
+
+      List<DynamicObject> documents = resp.getList("documents");
+      assertEquals(1, documents.size());
+      assertEquals(documentId, documents.get(0).get("documentId"));
+      assertNull(documents.get(0).get("insertedDate"));
+      assertNull(documents.get(0).get("lastModifiedDate"));
+      assertNull(documents.get(0).get("userId"));
+    }
+  }
+
+  /**
+   * Get /documents request with invalid "actionStatus".
+   *
+   * @throws Exception an error has occurred
+   */
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testHandleGetDocuments16() throws Exception {
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      Date date = new Date();
+      final long contentLength = 1000L;
+      String username = UUID.randomUUID() + "@formkiq.com";
+      String documentId = UUID.randomUUID().toString();
+      DocumentItemDynamoDb item = new DocumentItemDynamoDb(documentId, date, username);
+      item.setContentLength(Long.valueOf(contentLength));
+
+      ApiGatewayRequestEvent event = toRequestEvent("/request-get-documents.json");
+      addParameter(event, "siteId", siteId);
+      addParameter(event, "actionStatus", "nothing");
+
+      // when
+      String response = handleRequest(event);
+
+      // then
+      Map<String, String> m = fromJson(response, Map.class);
+
+      assertEquals("400.0", String.valueOf(m.get("statusCode")));
+      assertEquals("{\"message\":\"invalid actionStatus 'nothing'\"}", m.get("body"));
+    }
+  }
+
+  /**
    * Options /documents request.
    *
    * @throws Exception an error has occurred
@@ -799,6 +888,22 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   }
 
   /**
+   * POST /documents request.
+   * 
+   * @param siteId {@link String}
+   * @param group {@link String}
+   * @param body {@link String}
+   * @return {@link ApiGatewayRequestEvent}
+   */
+  private ApiGatewayRequestEvent postDocumentsRequest(final String siteId, final String group,
+      final String body) {
+    ApiGatewayRequestEvent event = new ApiGatewayRequestEventBuilder().method("post")
+        .resource("/documents").path("/documents").group(group).user("joesmith")
+        .queryParameters(siteId != null ? Map.of("siteId", siteId) : null).body(body).build();
+    return event;
+  }
+
+  /**
    * POST /documents request non Base64 body.
    *
    * @throws Exception an error has occurred
@@ -808,29 +913,122 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   public void testHandlePostDocuments01() throws Exception {
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
       // given
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"tags\":[{\"key\":\"firstname\",\"value\":\"john\"},"
+          + "{\"key\":\"lastname\",\"value\":\"smith\"}]}";
+
       // when
-      DynamicObject obj =
-          handleRequest("/request-post-documents-documentid01.json", siteId, null, null);
+      DynamicObject obj = handleRequestDynamic(
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body));
 
       // then
-      DynamicObject body = new DynamicObject(fromJson(obj.getString("body"), Map.class));
-
+      DynamicObject o = new DynamicObject(fromJson(obj.getString("body"), Map.class));
       assertHeaders(obj.getMap("headers"));
       assertEquals("201.0", obj.getString("statusCode"));
 
-      assertNotNull(body.getString("documentId"));
-      assertNull(body.getString("next"));
-      assertNull(body.getString("previous"));
+      assertNotNull(o.getString("documentId"));
+      assertNull(o.getString("next"));
+      assertNull(o.getString("previous"));
 
-      String key = getKey(siteId, body);
-      String documentId = body.getString("documentId");
+      String key = getKey(siteId, o);
+      String documentId = o.getString("documentId");
 
       assertTrue(
           getLogger().containsString("s3 putObject " + key + " into bucket " + STAGE_BUCKET_NAME));
 
       assertNotNull(documentId);
 
-      verifyS3(key, true, "a0dac80d-18b3-472b-88da-79e75082b662@formkiq.com");
+      verifyS3(key, true, "joesmith");
+    }
+  }
+
+  /**
+   * POST /documents request webhook invalid action.
+   *
+   * @throws Exception an error has occurred
+   */
+  @Test
+  public void testHandlePostDocuments19() throws Exception {
+    for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+      // given
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"actions\":[{\"type\":\"webhook\"}]}";
+
+      // when
+      DynamicObject obj = handleRequestDynamic(
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body));
+
+      // then
+      assertEquals("400.0", obj.getString("statusCode"));
+      assertEquals("{\"errors\":[{\"key\":\"parameters.url\","
+          + "\"error\":\"action 'url' parameter is required\"}]}", obj.getString("body"));
+    }
+  }
+
+  /**
+   * POST /documents request webhook valid action.
+   *
+   * @throws Exception an error has occurred
+   */
+  @Test
+  public void testHandlePostDocuments20() throws Exception {
+    for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+      // given
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"actions\":[{\"type\":\"webhook\",\"parameters\":{\"url\":\"http://localhost\"}}]}";
+
+      // when
+      DynamicObject obj = handleRequestDynamic(
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body));
+
+      // then
+      assertEquals("201.0", obj.getString("statusCode"));
+    }
+  }
+
+  /**
+   * POST /documents request webhook invalid type.
+   *
+   * @throws Exception an error has occurred
+   */
+  @Test
+  public void testHandlePostDocuments21() throws Exception {
+    for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+      // given
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"actions\":[{\"type\":\"something\"}]}";
+
+      // when
+      DynamicObject obj = handleRequestDynamic(
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body));
+
+      // then
+      assertEquals("400.0", obj.getString("statusCode"));
+      assertEquals("{\"errors\":[{\"key\":\"type\",\"error\":\"action 'type' is required\"}]}",
+          obj.getString("body"));
+    }
+  }
+
+  /**
+   * POST /documents request missing type.
+   *
+   * @throws Exception an error has occurred
+   */
+  @Test
+  public void testHandlePostDocuments22() throws Exception {
+    for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+      // given
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"actions\":[{\"type2\":\"something\"}]}";
+
+      // when
+      DynamicObject obj = handleRequestDynamic(
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body));
+
+      // then
+      assertEquals("400.0", obj.getString("statusCode"));
+      assertEquals("{\"errors\":[{\"key\":\"type\",\"error\":\"action 'type' is required\"}]}",
+          obj.getString("body"));
     }
   }
 
@@ -872,7 +1070,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
       assertNotNull(UUID.fromString(resp.getString("documentId")));
 
-      assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key).isObjectExists());
+      assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key, null).isObjectExists());
       String content = getS3().getContentAsString(STAGE_BUCKET_NAME, key, null);
       DynamicObject obj = new DynamicObject(fromJson(content, Map.class));
       assertTrue(obj.hasString("documentId"));
@@ -1005,7 +1203,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
     // then
     String expected = "{" + getHeaders() + ",\"body\":\""
-        + "{\\\"message\\\":\\\"fkq access denied (groups: default)\\\"}\",\"statusCode\":403}";
+        + "{\\\"message\\\":\\\"fkq access denied (no groups)\\\"}\",\"statusCode\":403}";
 
     assertEquals(expected, response);
   }
@@ -1044,7 +1242,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
     assertNotNull(UUID.fromString(resp.getString("documentId")));
 
-    assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key).isObjectExists());
+    assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key, null).isObjectExists());
   }
 
   /**
@@ -1209,7 +1407,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
       assertEquals("application/octet-stream", verifyS3.getString("contentType"));
 
       assertEquals("application/octet-stream",
-          getS3().getObjectMetadata(STAGE_BUCKET_NAME, key).getContentType());
+          getS3().getObjectMetadata(STAGE_BUCKET_NAME, key, null).getContentType());
     }
   }
 
@@ -1222,7 +1420,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   public void testHandlePostDocuments13() throws Exception {
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
       // given
-      AwsServiceCache.register(DocumentTagSchemaPlugin.class,
+      getAwsServices().register(DocumentTagSchemaPlugin.class,
           new DocumentTagSchemaPluginExtension(new DocumentTagSchemaReturnErrors()));
 
       // when
@@ -1247,7 +1445,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   public void testHandlePostDocuments14() throws Exception {
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
       // given
-      AwsServiceCache.register(DocumentTagSchemaPlugin.class,
+      getAwsServices().register(DocumentTagSchemaPlugin.class,
           new DocumentTagSchemaPluginExtension(new DocumentTagSchemaReturnNewTags()));
 
       // when
@@ -1290,22 +1488,22 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   public void testHandlePostDocuments15() throws Exception {
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
       // given
-      ApiGatewayRequestEvent event = toRequestEvent("/request-post-documents-documentid01.json");
-      addParameter(event, "siteId", siteId);
-      event.setBody("{\"path\":\"something/bleh/\"}");
+      String body = "{\"path\":\"something/bleh/\"}";
+
+      ApiGatewayRequestEvent event =
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body);
 
       // when
-      String response = handleRequest(event);
-      DynamicObject obj = new DynamicObject(fromJson(response, Map.class));
+      DynamicObject obj = handleRequestDynamic(event);
 
       // then
-      DynamicObject body = new DynamicObject(fromJson(obj.getString("body"), Map.class));
+      DynamicObject o = new DynamicObject(fromJson(obj.getString("body"), Map.class));
 
       assertHeaders(obj.getMap("headers"));
       assertEquals("201.0", obj.getString("statusCode"));
 
-      assertNull(body.getString("documentId"));
-      assertEquals("folder created", body.getString("message"));
+      assertNull(o.getString("documentId"));
+      assertEquals("folder created", o.getString("message"));
 
       DocumentSearchService search = getAwsServices().getExtension(DocumentSearchService.class);
 
@@ -1321,7 +1519,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
       // given
       // when
-      response = handleRequest(event);
+      String response = handleRequest(event);
       obj = new DynamicObject(fromJson(response, Map.class));
 
       // then
@@ -1343,8 +1541,13 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
     // given
     final int count = 30;
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"tags\":[{\"key\":\"firstname\",\"value\":\"john\"},"
+          + "{\"key\":\"lastname\",\"value\":\"smith\"}]}";
       ApiGatewayRequestEvent event =
-          createRequest("/request-post-documents-documentid01.json", siteId, null, null);
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body);
+
+      // when
 
       Map<String, Object> data = fromJson(event.getBody(), Map.class);
       List<Map<String, Object>> metadata = new ArrayList<>();
@@ -1359,11 +1562,11 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
       // then
       DynamicObject obj = new DynamicObject(fromJson(response, Map.class));
-      DynamicObject body = new DynamicObject(fromJson(obj.getString("body"), Map.class));
+      DynamicObject o = new DynamicObject(fromJson(obj.getString("body"), Map.class));
 
       assertHeaders(obj.getMap("headers"));
       assertEquals("400.0", obj.getString("statusCode"));
-      assertEquals("{errors=[{key=metadata, error=maximum number is 25}]}", body.toString());
+      assertEquals("{errors=[{key=metadata, error=maximum number is 25}]}", o.toString());
     }
   }
 
@@ -1379,8 +1582,13 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
     final int count = 1001;
     for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
       String filled = StringUtils.repeat("*", count);
+
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"tags\":[{\"key\":\"firstname\",\"value\":\"john\"},"
+          + "{\"key\":\"lastname\",\"value\":\"smith\"}]}";
+
       ApiGatewayRequestEvent event =
-          createRequest("/request-post-documents-documentid01.json", siteId, null, null);
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body);
 
       Map<String, Object> data = fromJson(event.getBody(), Map.class);
       List<Map<String, Object>> metadata = new ArrayList<>();
@@ -1395,12 +1603,41 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
 
       // then
       DynamicObject obj = new DynamicObject(fromJson(response, Map.class));
-      DynamicObject body = new DynamicObject(fromJson(obj.getString("body"), Map.class));
+      DynamicObject o = new DynamicObject(fromJson(obj.getString("body"), Map.class));
 
       assertHeaders(obj.getMap("headers"));
       assertEquals("400.0", obj.getString("statusCode"));
       assertEquals("{errors=[{key=ad1, error=value cannot exceed 1000}, "
-          + "{key=ad2, error=value cannot exceed 1000}]}", body.toString());
+          + "{key=ad2, error=value cannot exceed 1000}]}", o.toString());
+    }
+  }
+
+  /**
+   * POST /documents invalid tag.
+   *
+   * @throws Exception an error has occurred
+   */
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testHandlePostDocuments18() throws Exception {
+    // given
+    for (String siteId : Arrays.asList(DEFAULT_SITE_ID, UUID.randomUUID().toString())) {
+
+      String body = "{\"content\": \"dGhpcyBpcyBhIHRlc3Q=\",\"path\": \"/file/test.txt\","
+          + "\"tags\":[{\"key\":\"CLAMAV_SCAN_STATUS\",\"value\":\"john\"}]}";
+
+      ApiGatewayRequestEvent event =
+          postDocumentsRequest(siteId, siteId != null ? siteId : "default", body);
+
+      // when
+      DynamicObject obj = handleRequestDynamic(event);
+
+      // then
+      DynamicObject o = new DynamicObject(fromJson(obj.getString("body"), Map.class));
+
+      assertHeaders(obj.getMap("headers"));
+      assertEquals("400.0", obj.getString("statusCode"));
+      assertEquals("{errors=[{key=CLAMAV_SCAN_STATUS, error=unallowed tag key}]}", o.toString());
     }
   }
 
@@ -1416,7 +1653,7 @@ public class ApiDocumentsRequestTest extends AbstractRequestHandler {
   @SuppressWarnings("unchecked")
   private DynamicObject verifyS3(final String key, final boolean hasContent, final String userId)
       throws Exception {
-    assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key).isObjectExists());
+    assertTrue(getS3().getObjectMetadata(STAGE_BUCKET_NAME, key, null).isObjectExists());
     String content = getS3().getContentAsString(STAGE_BUCKET_NAME, key, null);
     DynamicObject obj = new DynamicObject(fromJson(content, Map.class));
 

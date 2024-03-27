@@ -25,10 +25,11 @@ package com.formkiq.stacks.dynamodb;
 
 import static com.formkiq.stacks.dynamodb.DocumentService.MAX_RESULTS;
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_TABLE;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.time.ZonedDateTime;
@@ -54,6 +55,7 @@ import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
 import com.formkiq.aws.dynamodb.model.SearchMetaCriteria;
 import com.formkiq.aws.dynamodb.model.SearchQuery;
 import com.formkiq.aws.dynamodb.model.SearchTagCriteria;
+import com.formkiq.aws.dynamodb.objects.DateUtil;
 import com.formkiq.testutils.aws.DynamoDbExtension;
 import com.formkiq.testutils.aws.DynamoDbTestServices;
 
@@ -77,11 +79,29 @@ public class DocumentSearchServiceImplTest {
   public void before() throws Exception {
 
     this.df.setTimeZone(TimeZone.getTimeZone("UTC"));
-    DynamoDbConnectionBuilder dynamoDbConnection = DynamoDbTestServices.getDynamoDbConnection(null);
+    DynamoDbConnectionBuilder dynamoDbConnection = DynamoDbTestServices.getDynamoDbConnection();
     this.service = new DocumentServiceImpl(dynamoDbConnection, DOCUMENTS_TABLE,
         new DocumentVersionServiceNoVersioning());
     this.searchService =
         new DocumentSearchServiceImpl(dynamoDbConnection, this.service, DOCUMENTS_TABLE, null);
+  }
+
+  /**
+   * Create Document with Tag.
+   * 
+   * @param siteId {@link String}
+   * @param tagKey {@link String}
+   * @param tagValue {@link String}
+   * @return {@link String}
+   */
+  private String createDocument(final String siteId, final String tagKey, final String tagValue) {
+    ZonedDateTime now = ZonedDateTime.now();
+    DocumentItem doc = createDocument(UUID.randomUUID().toString(), now, "text/plain", "test.txt");
+    Collection<DocumentTag> tags = Arrays
+        .asList(new DocumentTag(doc.getDocumentId(), tagKey, tagValue, new Date(), "testuser"));
+    this.service.saveDocument(siteId, doc, tags);
+
+    return doc.getDocumentId();
   }
 
   /**
@@ -778,7 +798,7 @@ public class DocumentSearchServiceImplTest {
       q1 = new SearchQuery().meta(new SearchMetaCriteria().folder("sample"));
 
       // when
-      this.service.deleteDocument(siteId, doc0.getDocumentId());
+      this.service.deleteDocument(siteId, doc0.getDocumentId(), false);
 
       // then
       results0 = this.searchService.search(siteId, q0, startkey, MAX_RESULTS);
@@ -861,6 +881,77 @@ public class DocumentSearchServiceImplTest {
       results = this.searchService.search(siteId, q, startkey, MAX_RESULTS);
       list = results.getResults();
       assertEquals(0, list.size());
+    }
+  }
+
+  /** Save document and search by path. */
+  @Test
+  public void testSearch18() {
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      String path = "/a/b/test2.pdf";
+      DocumentItem doc = new DocumentItemDynamoDb(UUID.randomUUID().toString(), new Date(), "joe");
+      doc.setPath(path);
+      this.service.saveDocument(siteId, doc, null);
+
+      PaginationMapToken startkey = null;
+      SearchMetaCriteria meta = new SearchMetaCriteria();
+      SearchQuery q = new SearchQuery().meta(meta.path(path));
+
+      // when
+      PaginationResults<DynamicDocumentItem> results =
+          this.searchService.search(siteId, q, startkey, MAX_RESULTS);
+
+      // then
+      List<DynamicDocumentItem> list = results.getResults();
+      assertEquals(1, list.size());
+      assertEquals(doc.getDocumentId(), list.get(0).getDocumentId());
+      assertEquals(doc.getPath(), list.get(0).getPath());
+
+      // given - invalid path
+      path = UUID.randomUUID().toString();
+      q = new SearchQuery().meta(meta.path(path));
+
+      // when
+      results = this.searchService.search(siteId, q, startkey, MAX_RESULTS);
+
+      // then
+      assertEquals(0, results.getResults().size());
+    }
+  }
+
+  /** Search by 'eq' / 'beginsWith' Tag Key & Value. */
+  @Test
+  public void testSearchForDocumentIds01() {
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      PaginationMapToken startkey = null;
+      final String documentId0 = createDocument(siteId, "category", "person0");
+      final String documentId1 = createDocument(siteId, "category", "person1");
+      createDocument(siteId, "category", "other");
+
+      SearchTagCriteria c = new SearchTagCriteria("category").eq("person0");
+
+      // when
+      PaginationResults<String> results =
+          this.searchService.searchForDocumentIds(siteId, c, startkey, MAX_RESULTS);
+
+      // then
+      assertEquals(1, results.getResults().size());
+      assertNull(results.getToken());
+      assertEquals(documentId0, results.getResults().get(0));
+
+      // given
+      c = new SearchTagCriteria("category").beginsWith("per");
+
+      // when
+      results = this.searchService.searchForDocumentIds(siteId, c, startkey, MAX_RESULTS);
+
+      // then
+      assertNull(results.getToken());
+      assertEquals(2, results.getResults().size());
+      assertTrue(results.getResults().contains(documentId0));
+      assertTrue(results.getResults().contains(documentId1));
     }
   }
 }

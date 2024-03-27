@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import com.formkiq.aws.dynamodb.PaginationMapToken;
+import com.formkiq.aws.dynamodb.PaginationResult;
 import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
@@ -41,12 +42,15 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 /** Services for Querying, Updating Documents. */
 public interface DocumentService extends DocumentTagLoader {
 
+  /** Soft Deleted Prefix. */
+  String SOFT_DELETE = "softdelete#";
+
   /** The Default maximum results returned. */
   int MAX_RESULTS = 10;
 
   /** System Defined Tags. */
   Set<String> SYSTEM_DEFINED_TAGS =
-      Set.of("untagged", "CLAMAV_SCAN_STATUS", "CLAMAV_SCAN_TIMESTAMP", "userId");
+      Set.of("untagged", "CLAMAV_SCAN_STATUS", "CLAMAV_SCAN_TIMESTAMP");
 
   /**
    * Add Folder Index.
@@ -56,6 +60,15 @@ public interface DocumentService extends DocumentTagLoader {
    * @throws IOException IOException
    */
   void addFolderIndex(String siteId, DocumentItem item) throws IOException;
+
+  /**
+   * Add Tags to {@link Collection} of Documents.
+   * 
+   * @param siteId Optional Grouping siteId
+   * @param tags {@link Map} {@link Collection} {@link DocumentTag}
+   * @param timeToLive {@link String}
+   */
+  void addTags(String siteId, Map<String, Collection<DocumentTag>> tags, String timeToLive);
 
   /**
    * Add Tags to Document.
@@ -72,9 +85,10 @@ public interface DocumentService extends DocumentTagLoader {
    * 
    * @param siteId Optional Grouping siteId
    * @param documentId {@link String}
+   * @param softDelete Whether to soft delete document
    * @return boolean whether a document was deleted
    */
-  boolean deleteDocument(String siteId, String documentId);
+  boolean deleteDocument(String siteId, String documentId, boolean softDelete);
 
   /**
    * Delete Document Format.
@@ -323,6 +337,17 @@ public interface DocumentService extends DocumentTagLoader {
       int maxresults);
 
   /**
+   * Find Deleted {@link DocumentItem}.
+   * 
+   * @param siteId Optional Grouping siteId
+   * @param token {@link Map}
+   * @param limit int
+   * @return {@link PaginationResults} {@link DocumentItem}
+   */
+  PaginationResults<DocumentItem> findSoftDeletedDocuments(String siteId,
+      Map<String, AttributeValue> token, int limit);
+
+  /**
    * Is Folder Exists.
    * 
    * @param siteId {@link String}
@@ -350,6 +375,15 @@ public interface DocumentService extends DocumentTagLoader {
    * @param tags Tag Names.
    */
   void removeTags(String siteId, String documentId, Collection<String> tags);
+
+  /**
+   * Restore Soft Deleted Documents.
+   * 
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @return boolean
+   */
+  boolean restoreSoftDeletedDocument(String siteId, String documentId);
 
   /**
    * Save Document and Tags.
@@ -413,4 +447,5 @@ public interface DocumentService extends DocumentTagLoader {
    */
   void updateDocument(String siteId, String documentId, Map<String, AttributeValue> attributes,
       boolean updateVersioning);
+
 }

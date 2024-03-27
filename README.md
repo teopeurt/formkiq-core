@@ -1,26 +1,42 @@
-<br/>
+<img width="100%" src="https://github.com/formkiq/formkiq-core/raw/master/images/logo.png"/>
+
+<center>
+
+[Get started](https://formkiq.com) · [Docs](https://docs.formkiq.com/) · [Issues](https://github.com/formkiq/formkiq-core/issues) · [Discord](https://discord.gg/q5K5cRhymW) · [Get in touch](mailto:info@formkiq.com)
+
+</center>
+
+[![Star us on GitHub](https://img.shields.io/github/stars/formkiq/formkiq-core?color=FFD700&label=Stars&logo=Github)](https://github.com/formiq/formkiq-core)
+[![twitter](https://img.shields.io/twitter/follow/formkiq?style=social)](https://twitter.com/intent/follow?screen_name=RevertdotDev) 
+<a href="https://github.com/formkiq/formkiq-core/tree/main/LICENSE.txt" target="_blank">
+<img src="https://img.shields.io/static/v1?label=license&message=MIT&color=white" alt="License">
+</a>
+
+## Document Layer for your Application
+
+Storing documents in your application isn't as easy as it should be and most of the time they end up getting stuffed into your data layer.
+
+FormKiQ acts as your document layer along side your data layer of your application. It handles the storage and metadata of your documents so you don't have to.
 
 <div align="center" style="margin: 30px;">
-<a href="https://formkiq.com/">
-  <img src="https://github.com/formkiq/formkiq-core/raw/master/images/logo.png" style="width:600px;" align="center" />
-</a>
-<br />
-<br />
-
-<div align="center">
-    <a href="https://formkiq.com">Home Page</a> |
-    <a href="https://docs.formkiq.com">Documentation</a> | 
-    <a href="https://blog.formkiq.com">Blog</a> |
-    <a href="https://github.com/formkiq/formkiq-core#Installation">Installation</a> |
-    <a href="https://www.formkiq.com/pricing">Paid Support</a>
-</div>
+<img src="https://github.com/formkiq/formkiq-core/blob/1af9e28504f467c8b2ea91b4a497a868ee7f2740/docs/images/multi-tier-architecture.png" style="width:600px;" align="center" />
 </div>
 
-<br />
+### Why storing documents in a database is not ideal:
 
-<div>FormKiQ&trade; Core is an open source Document Management Platform that supports anyone from startups to enterprises.<br>API first design makes it perfect to run standalone or to add Document Management functionality to existing applications.<br><br>FormKiQ can be used as a more robust document control and discovery solution than file storage products like Google Drive and Dropbox, or as a more flexible document management alternative to services like eFileCabinet, DocuPhase, and M-files.
-<br />
-<br />
+* Storage: Increased storage costs
+* Performance: Slows down database performance
+* Security Concerns: Lack of data controls
+
+### Why storing documents in AWS S3 is not enough:
+
+* Lacks robust Metadata and Tagging
+* Does not support Full-text searching
+* Missing fine grain access controls
+
+FormKiQ is an API document layer platform built on top of [AWS Managed Service](https://aws.amazon.com/managed-services/) to store and manage your documents, so you don't have to build it.
+
+And it ALL runs in *your* AWS account.
 </div>
 
 ### Features
@@ -39,24 +55,42 @@
 
 ✅ Supports Both Multi-Tenant and Multi-Instance
 
-✅ [Professional and Enterprise Features and Support Available](https://www.formkiq.com)
+✅ [Commerical Support Available](https://www.formkiq.com)
+
+## Demo
+
+Try out our [FormKiQ Readonly Demo](https://demo.tryformkiq.com/?demo=tryformkiq)
 
 ## Installation
 
 The following are AWS CloudFormation scripts that can be used to install FormKiQ and other resources in a single click!
 
-Follow our [Quickstart Guide](https://docs.formkiq.com/docs/1.9.0/quickstart/README.html) to get started!
+Follow our [Quickstart Guide](https://docs.formkiq.com/docs/getting-started/quick-start) to get started!
 
-Then checkout out our [Getting Started with the FormKiQ Document API](https://docs.formkiq.com/docs/1.9.0/tutorials/formkiq-document-api-with-postman.html)
+Then checkout out our [API Walkthrough](https://docs.formkiq.com/docs/getting-started/api-walkthrough)
 
+## Archecture
+
+<div align="center" style="margin: 30px;">
+<br />
+<img src="https://raw.githubusercontent.com/formkiq/formkiq-core/master/docs/images/formkiq_architecture.png" style="width:600px;" align="center" />
+<br /><br /><br />
+</div>
+
+## Client SDKs
+
+The following are official FormKiQ client SDKs that were generated using the [OpenAPI Generator](https://github.com/OpenAPITools/openapi-generator)
+
+* [Java](https://github.com/formkiq/formkiq-client-sdk-java)
+* [Python](https://github.com/formkiq/formkiq-client-sdk-python)
+  
 ## Tutorials
 
 After FormKiQ is installed checkout the following links to continue on your journey!
 
-* [Getting Started with the FormKiQ Document API](https://docs.formkiq.com/docs/1.9.0/tutorials/formkiq-document-api-with-postman.html)
-* [FormKiQ API Reference](https://docs.formkiq.com/docs/1.9.0/api/index.html)
-* [Tutorials](https://docs.formkiq.com/docs/1.9.0/tutorials/overview.html)
-* [How-To](https://docs.formkiq.com/docs/1.9.0/how-to/overview.html)
+* [FormKiQ API Reference](https://docs.formkiq.com/docs/category/api-reference)
+* [Tutorials](https://docs.formkiq.com/docs/category/tutorials)
+* [How-To](https://docs.formkiq.com/docs/category/how-to)
 
 ## Support
 

@@ -24,10 +24,10 @@
 package com.formkiq.stacks.api;
 
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.DEFAULT_SITE_ID;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -210,7 +210,7 @@ public class ApiRequestHandlerTest extends AbstractRequestHandler {
 
     assertEquals(documentId, resp.get("documentId"));
     assertEquals(userId, resp.get("userId"));
-    assertNotNull(documentId, resp.get("insertedDate"));
+    assertNotNull(resp.get("insertedDate"));
     assertEquals(DEFAULT_SITE_ID, resp.get("siteId"));
     assertNull(resp.get("next"));
     assertNull(resp.get("previous"));
@@ -264,7 +264,7 @@ public class ApiRequestHandlerTest extends AbstractRequestHandler {
     assertEquals(1, children.size());
 
     assertEquals(documentId1, children.get(0).get("documentId"));
-    assertNotNull(userId, children.get(0).get("userId"));
+    assertEquals(userId, children.get(0).get("userId"));
     assertNotNull(children.get(0).get("belongsToDocumentId"));
     assertNotNull(children.get(0).get("insertedDate"));
     assertNull(children.get(0).get("siteId"));
@@ -280,7 +280,7 @@ public class ApiRequestHandlerTest extends AbstractRequestHandler {
   public void testVersion01() throws Exception {
     // given
     setEnvironment("MODULE_ocr", "true");
-    setEnvironment("MODULE_fulltext", "true");
+    setEnvironment("MODULE_typesense", "true");
     setEnvironment("MODULE_otherone", "false");
 
     ApiGatewayRequestEvent event = toRequestEvent("/request-version.json");
@@ -298,6 +298,38 @@ public class ApiRequestHandlerTest extends AbstractRequestHandler {
     Map<String, Object> resp = fromJson(m.get("body"), Map.class);
     assertEquals("1.1", resp.get("version"));
     assertEquals("core", resp.get("type"));
-    assertEquals("[ocr, fulltext]", resp.get("modules").toString());
+    assertEquals("[ocr, typesense]", resp.get("modules").toString());
+  }
+
+  /**
+   * /version request belong to multiple groups.
+   *
+   * @throws Exception an error has occurred
+   */
+  @SuppressWarnings("unchecked")
+  @Test
+  public void testVersion02() throws Exception {
+    // given
+    setEnvironment("MODULE_ocr", "true");
+    setEnvironment("MODULE_typesense", "true");
+    setEnvironment("MODULE_otherone", "false");
+
+    ApiGatewayRequestEvent event = toRequestEvent("/request-version.json");
+    setCognitoGroup(event, "finance", "other");
+
+    // when
+    String response = handleRequest(event);
+
+    // then
+    Map<String, String> m = fromJson(response, Map.class);
+
+    final int mapsize = 3;
+    assertEquals(mapsize, m.size());
+    assertEquals("200.0", String.valueOf(m.get("statusCode")));
+    assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
+    Map<String, Object> resp = fromJson(m.get("body"), Map.class);
+    assertEquals("1.1", resp.get("version"));
+    assertEquals("core", resp.get("type"));
+    assertEquals("[ocr, typesense]", resp.get("modules").toString());
   }
 }

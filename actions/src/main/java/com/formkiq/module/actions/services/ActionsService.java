@@ -25,9 +25,9 @@ package com.formkiq.module.actions.services;
 
 import java.util.List;
 import java.util.Map;
+import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.module.actions.Action;
 import com.formkiq.module.actions.ActionStatus;
-import com.formkiq.module.actions.ActionType;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
@@ -46,14 +46,38 @@ public interface ActionsService {
   void deleteActions(String siteId, String documentId);
 
   /**
-   * Get Action Parameters.
+   * Find Document in Queue.
    * 
    * @param siteId {@link String}
    * @param documentId {@link String}
-   * @param type {@link ActionType}
-   * @return {@link Map}
+   * @param queueId {@link String}
+   * @return {@link Action}
    */
-  Map<String, String> getActionParameters(String siteId, String documentId, ActionType type);
+  Action findActionInQueue(String siteId, String documentId, String queueId);
+
+  /**
+   * Find Documents in Queue.
+   * 
+   * @param siteId {@link String}
+   * @param queueId {@link String}
+   * @param exclusiveStartKey {@link Map}
+   * @param limit int
+   * @return {@link PaginationResults} {@link Action}
+   */
+  PaginationResults<Action> findDocumentsInQueue(String siteId, String queueId,
+      Map<String, AttributeValue> exclusiveStartKey, int limit);
+
+  /**
+   * Find Documents with FAILED status.
+   * 
+   * @param siteId {@link String}
+   * @param status {@link ActionStatus}
+   * @param exclusiveStartKey {@link Map}
+   * @param limit int
+   * @return {@link PaginationResults}
+   */
+  PaginationResults<String> findDocumentsWithStatus(String siteId, ActionStatus status,
+      Map<String, AttributeValue> exclusiveStartKey, int limit);
 
   /**
    * Get {@link List} {@link Action} for a document.
@@ -74,15 +98,24 @@ public interface ActionsService {
   boolean hasActions(String siteId, String documentId);
 
   /**
-   * Save {@link List} {@link Action}.
+   * Insert {@link Action}.
    * 
    * @param siteId {@link String}
    * @param documentId {@link String}
    * @param actions {@link List} {@link Action}
-   * @return {@link List} {@link Map}
+   * @param currentAction {@link Action}
+   * @param insertedAction {@link Action}
    */
-  List<Map<String, AttributeValue>> saveActions(String siteId, String documentId,
-      List<Action> actions);
+  void insertBeforeAction(String siteId, String documentId, List<Action> actions,
+      Action currentAction, Action insertedAction);
+
+  /**
+   * Save {@link Action}.
+   * 
+   * @param siteId {@link String}
+   * @param action {@link Action}
+   */
+  void saveAction(String siteId, Action action);
 
   /**
    * Save {@link Action}.
@@ -95,24 +128,39 @@ public interface ActionsService {
   void saveAction(String siteId, String documentId, Action action, int index);
 
   /**
+   * Save {@link Action}.
+   * 
+   * @param siteId {@link String}
+   * @param actions {@link List} {@link Action}
+   */
+  void saveActions(String siteId, List<Action> actions);
+
+  /**
+   * Save {@link List} {@link Action}.
+   * 
+   * @param siteId {@link String}
+   * @param documentId {@link String}
+   * @param actions {@link List} {@link Action}
+   * @return {@link List} {@link Map}
+   */
+  List<Map<String, AttributeValue>> saveNewActions(String siteId, String documentId,
+      List<Action> actions);
+
+  /**
    * Update {@link Action} {@link ActionStatus}.
    * 
    * @param siteId {@link String}
    * @param documentId {@link String}
    * @param action {@link Action}
-   * @param index int
    */
-  void updateActionStatus(String siteId, String documentId, Action action, int index);
+  void updateActionStatus(String siteId, String documentId, Action action);
 
   /**
-   * Updates {@link ActionStatus}.
+   * Update Document Workflow Status.
    * 
    * @param siteId {@link String}
    * @param documentId {@link String}
-   * @param type {@link ActionType}
-   * @param status {@link ActionStatus}
-   * @return {@link List} {@link Action}
+   * @param action {@link Action}
    */
-  List<Action> updateActionStatus(String siteId, String documentId, ActionType type,
-      ActionStatus status);
+  void updateDocumentWorkflowStatus(String siteId, String documentId, Action action);
 }

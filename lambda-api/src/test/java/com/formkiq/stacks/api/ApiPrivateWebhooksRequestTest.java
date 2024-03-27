@@ -25,8 +25,8 @@ package com.formkiq.stacks.api;
 
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.createDatabaseKey;
 import static com.formkiq.testutils.aws.TestServices.STAGE_BUCKET_NAME;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
@@ -35,12 +35,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import com.formkiq.aws.dynamodb.DynamicObject;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.lambda.apigateway.util.GsonUtil;
+import com.formkiq.stacks.dynamodb.WebhooksService;
 import com.formkiq.testutils.aws.DynamoDbExtension;
 import com.formkiq.testutils.aws.LocalStackExtension;
 
 /** Unit Tests for request POST /public/webhooks. */
-@ExtendWith(LocalStackExtension.class)
 @ExtendWith(DynamoDbExtension.class)
+@ExtendWith(LocalStackExtension.class)
 public class ApiPrivateWebhooksRequestTest extends AbstractRequestHandler {
 
   /** Extension for FormKiQ config file. */
@@ -62,8 +63,8 @@ public class ApiPrivateWebhooksRequestTest extends AbstractRequestHandler {
       for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
         String name = UUID.randomUUID().toString();
 
-        String id =
-            getAwsServices().webhookService().saveWebhook(siteId, name, "joe", null, enabled);
+        String id = getAwsServices().getExtension(WebhooksService.class).saveWebhook(siteId, name,
+            "joe", null, enabled);
 
         ApiGatewayRequestEvent event = toRequestEvent("/request-post-private-webhooks01.json");
         addParameter(event, "siteId", siteId);
@@ -117,11 +118,12 @@ public class ApiPrivateWebhooksRequestTest extends AbstractRequestHandler {
     }
 
     if (hasTimeToLive) {
-      DynamicObject obj = getAwsServices().webhookService().findWebhook(siteId, webhookId);
+      DynamicObject obj =
+          getAwsServices().getExtension(WebhooksService.class).findWebhook(siteId, webhookId);
       assertNotNull(obj.get("TimeToLive"));
       assertEquals(obj.get("TimeToLive"), map.get("TimeToLive"));
     }
 
-    getS3().deleteObject(STAGE_BUCKET_NAME, key);
+    getS3().deleteObject(STAGE_BUCKET_NAME, key, null);
   }
 }

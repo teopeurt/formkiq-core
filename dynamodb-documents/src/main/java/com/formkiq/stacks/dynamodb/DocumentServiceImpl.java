@@ -26,8 +26,10 @@ package com.formkiq.stacks.dynamodb;
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.createDatabaseKey;
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.resetDatabaseKey;
 import static com.formkiq.aws.dynamodb.objects.Objects.notNull;
-import static com.formkiq.stacks.dynamodb.FolderIndexProcessor.INDEX_FILE_SK;
-import static software.amazon.awssdk.utils.StringUtils.isEmpty;
+import static com.formkiq.aws.dynamodb.objects.Strings.isEmpty;
+import static com.formkiq.aws.dynamodb.objects.Strings.isUuid;
+import static com.formkiq.aws.dynamodb.objects.Strings.removeQuotes;
+import static software.amazon.awssdk.services.dynamodb.model.AttributeValue.fromS;
 import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -41,6 +43,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -49,14 +52,17 @@ import java.util.TimeZone;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import com.formkiq.aws.dynamodb.BatchGetConfig;
 import com.formkiq.aws.dynamodb.DbKeys;
 import com.formkiq.aws.dynamodb.DynamicObject;
 import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
 import com.formkiq.aws.dynamodb.DynamoDbService;
 import com.formkiq.aws.dynamodb.DynamoDbServiceImpl;
 import com.formkiq.aws.dynamodb.PaginationMapToken;
+import com.formkiq.aws.dynamodb.PaginationResult;
 import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.aws.dynamodb.PaginationToAttributeValue;
+import com.formkiq.aws.dynamodb.QueryConfig;
 import com.formkiq.aws.dynamodb.QueryResponseToPagination;
 import com.formkiq.aws.dynamodb.ReadRequestBuilder;
 import com.formkiq.aws.dynamodb.WriteRequestBuilder;
@@ -64,13 +70,13 @@ import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
 import com.formkiq.aws.dynamodb.model.DocumentTagType;
 import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
+import com.formkiq.aws.dynamodb.objects.DateUtil;
 import com.formkiq.aws.dynamodb.objects.Objects;
 import com.formkiq.aws.dynamodb.objects.Strings;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.BatchGetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.BatchGetItemResponse;
-import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
@@ -98,8 +104,8 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   private String documentTableName;
   /** {@link FolderIndexProcessor}. */
   private FolderIndexProcessor folderIndexProcessor;
-  /** {@link GlobalIndexWriter}. */
-  private GlobalIndexWriter indexWriter = new GlobalIndexWriter();
+  /** {@link GlobalIndexService}. */
+  private GlobalIndexService indexWriter;
   /** Last Short Date. */
   private String lastShortDate = null;
   /** {@link DocumentVersionService}. */
@@ -118,10 +124,12 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
    */
   public DocumentServiceImpl(final DynamoDbConnectionBuilder connection,
       final String documentsTable, final DocumentVersionService documentVersionsService) {
+
     if (documentsTable == null) {
       throw new IllegalArgumentException("'documentsTable' is null");
     }
 
+    this.indexWriter = new GlobalIndexService(connection, documentsTable);
     this.versionsService = documentVersionsService;
     this.dbClient = connection.build();
     this.documentTableName = documentsTable;
@@ -137,10 +145,12 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   @Override
   public void addFolderIndex(final String siteId, final DocumentItem item) throws IOException {
 
-    List<Map<String, AttributeValue>> folderIndex =
-        this.folderIndexProcessor.generateIndex(siteId, item);
+    Date now = item.getLastModifiedDate();
 
-    folderIndex = updateFromExistingFolder(folderIndex);
+    List<FolderIndexRecordExtended> list =
+        this.folderIndexProcessor.get(siteId, item.getPath(), "folder", item.getUserId(), now);
+    List<Map<String, AttributeValue>> folderIndex = list.stream().filter(r -> r.isChanged())
+        .map(r -> r.record().getAttributes(siteId)).collect(Collectors.toList());
 
     WriteRequestBuilder writeBuilder =
         new WriteRequestBuilder().appends(this.documentTableName, folderIndex);
@@ -160,23 +170,35 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   }
 
   @Override
-  public void addTags(final String siteId, final String documentId,
-      final Collection<DocumentTag> tags, final String timeToLive) {
+  public void addTags(final String siteId, final Map<String, Collection<DocumentTag>> tags,
+      final String timeToLive) {
 
-    List<Map<String, AttributeValue>> items =
-        getSaveTagsAttributes(siteId, documentId, tags, timeToLive);
+    Collection<String> tagKeys = new HashSet<>();
+    List<Map<String, AttributeValue>> items = new ArrayList<>();
+
+    for (Map.Entry<String, Collection<DocumentTag>> e : tags.entrySet()) {
+      List<Map<String, AttributeValue>> attributes =
+          getSaveTagsAttributes(siteId, e.getKey(), e.getValue(), timeToLive);
+      items.addAll(attributes);
+
+      tagKeys.addAll(e.getValue().stream().map(t -> t.getKey()).collect(Collectors.toList()));
+    }
 
     if (!items.isEmpty()) {
-      WriteRequestBuilder builder =
+
+      WriteRequestBuilder writeBuilder =
           new WriteRequestBuilder().appends(this.documentTableName, items);
-      BatchWriteItemRequest batch =
-          BatchWriteItemRequest.builder().requestItems(builder.getItems()).build();
-      this.dbClient.batchWriteItem(batch);
 
-      List<String> tagKeys = tags.stream().map(t -> t.getKey()).collect(Collectors.toList());
+      writeBuilder.batchWriteItem(this.dbClient);
 
-      this.indexWriter.writeTagIndex(this.documentTableName, this.dbClient, siteId, tagKeys);
+      this.indexWriter.writeTagIndex(siteId, tagKeys);
     }
+  }
+
+  @Override
+  public void addTags(final String siteId, final String documentId,
+      final Collection<DocumentTag> tags, final String timeToLive) {
+    addTags(siteId, Map.of(documentId, tags), timeToLive);
   }
 
   /**
@@ -212,34 +234,45 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   }
 
   @Override
-  public boolean deleteDocument(final String siteId, final String documentId) {
+  public boolean deleteDocument(final String siteId, final String documentId,
+      final boolean softDelete) {
 
-    Map<String, AttributeValue> startkey = null;
+    boolean deleted = false;
+
+    this.versionsService.deleteAllVersionIds(this.dbClient, siteId, documentId);
 
     DocumentItem item = findDocument(siteId, documentId);
 
     deleteFolderIndex(siteId, item);
 
-    do {
-      Map<String, AttributeValue> values =
-          queryKeys(keysGeneric(siteId, PREFIX_DOCS + documentId, null));
+    Map<String, AttributeValue> keys = keysGeneric(siteId, PREFIX_DOCS + documentId, null);
+    AttributeValue pk = keys.get(PK);
+    AttributeValue sk = null;
 
-      QueryRequest q = QueryRequest.builder().tableName(this.documentTableName)
-          .keyConditionExpression(PK + " = :pk").expressionAttributeValues(values)
-          .limit(Integer.valueOf(MAX_RESULTS)).build();
+    List<Map<String, AttributeValue>> list = queryDocumentAttributes(pk, sk, softDelete);
 
-      QueryResponse response = this.dbClient.query(q);
-      List<Map<String, AttributeValue>> results = response.items();
+    if (softDelete) {
 
-      for (Map<String, AttributeValue> map : results) {
-        deleteItem(Map.of("PK", map.get("PK"), "SK", map.get("SK")));
+      deleted = this.dbService.moveItems(list,
+          new DocumentDeleteMoveAttributeFunction(siteId, documentId));
+
+    } else {
+
+      pk = fromS(SOFT_DELETE + pk.s());
+      list.addAll(queryDocumentAttributes(pk, sk, false));
+
+      keys = keysGeneric(siteId, SOFT_DELETE + PREFIX_DOCS, null);
+      pk = keys.get(PK);
+      sk = fromS(SOFT_DELETE + "document#" + documentId);
+
+      list.addAll(queryDocumentAttributes(pk, sk, false));
+
+      if (this.dbService.deleteItems(list)) {
+        deleted = true;
       }
+    }
 
-      startkey = response.lastEvaluatedKey();
-
-    } while (startkey != null && !startkey.isEmpty());
-
-    return deleteItem(keysDocument(siteId, documentId, Optional.empty()));
+    return deleted;
   }
 
   @Override
@@ -539,14 +572,16 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   @Override
   public List<DocumentItem> findDocuments(final String siteId, final List<String> ids) {
 
-    List<DocumentItem> results = null;
+    List<DocumentItem> results = Collections.emptyList();
+
+    BatchGetConfig config = new BatchGetConfig();
 
     if (!ids.isEmpty()) {
 
       List<Map<String, AttributeValue>> keys = ids.stream()
           .map(documentId -> keysDocument(siteId, documentId)).collect(Collectors.toList());
 
-      Collection<List<Map<String, AttributeValue>>> values = getBatch(keys).values();
+      Collection<List<Map<String, AttributeValue>>> values = getBatch(config, keys).values();
       List<Map<String, AttributeValue>> result =
           !values.isEmpty() ? values.iterator().next() : Collections.emptyList();
 
@@ -555,7 +590,9 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
           .collect(Collectors.toList());
       items = sortByIds(ids, items);
 
-      results = !items.isEmpty() ? items : null;
+      if (!items.isEmpty()) {
+        results = items;
+      }
     }
 
     return results;
@@ -796,6 +833,22 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
     return findAndTransform(keys, token, maxresults, new AttributeValueToPresetTag());
   }
 
+  @Override
+  public PaginationResults<DocumentItem> findSoftDeletedDocuments(final String siteId,
+      final Map<String, AttributeValue> startkey, final int limit) {
+
+    Map<String, AttributeValue> sdKeys =
+        keysGeneric(siteId, SOFT_DELETE + PREFIX_DOCS, SOFT_DELETE + "document");
+
+    QueryConfig config = new QueryConfig().scanIndexForward(Boolean.TRUE);
+    QueryResponse result =
+        this.dbService.queryBeginsWith(config, sdKeys.get(PK), sdKeys.get(SK), startkey, limit);
+
+    List<DocumentItem> items = result.items().stream()
+        .map(a -> new AttributeValueToDocumentItem().apply(a)).collect(Collectors.toList());
+    return new PaginationResults<>(items, new QueryResponseToPagination().apply(result));
+  }
+
   /**
    * Generate DynamoDB PK(s)/SK(s) to search.
    * 
@@ -848,13 +901,14 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
    * Get Batch Keys.
    * 
    * @param keys {@link List} {@link Map} {@link AttributeValue}
+   * @param config {@link BatchGetConfig}
    * @return {@link Map}
    */
-  private Map<String, List<Map<String, AttributeValue>>> getBatch(
+  private Map<String, List<Map<String, AttributeValue>>> getBatch(final BatchGetConfig config,
       final Collection<Map<String, AttributeValue>> keys) {
     ReadRequestBuilder builder = new ReadRequestBuilder();
     builder.append(this.documentTableName, keys);
-    return builder.batchReadItems(this.dbClient);
+    return builder.batchReadItems(this.dbClient, config);
   }
 
   /**
@@ -934,10 +988,15 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
 
     addS(pkvalues, "tagSchemaId", document.getTagSchemaId());
     addS(pkvalues, "userId", document.getUserId());
-    addS(pkvalues, "path",
-        isEmpty(document.getPath()) ? document.getDocumentId() : document.getPath());
+
+    String path = isEmpty(document.getPath()) ? document.getDocumentId() : document.getPath();
+    document.setPath(path);
+    addS(pkvalues, "path", path);
+
+    updateDeepLinkPath(pkvalues, document);
+
     addS(pkvalues, "version", document.getVersion());
-    addS(pkvalues, "s3version", document.getS3version());
+    addS(pkvalues, DocumentVersionService.S3VERSION_ATTRIBUTE, document.getS3version());
     addS(pkvalues, "contentType", document.getContentType());
 
 
@@ -945,8 +1004,10 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
       addN(pkvalues, "contentLength", "" + document.getContentLength());
     }
 
+    updateCurrentChecksumFromPrevious(document, previous);
+
     if (document.getChecksum() != null) {
-      String etag = document.getChecksum().replaceAll("^\"|\"$", "");
+      String etag = removeQuotes(document.getChecksum());
       addS(pkvalues, "checksum", etag);
     }
 
@@ -988,15 +1049,44 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
   }
 
   /**
+   * Has current changed from previous.
+   * 
+   * @param previous {@link Map}
+   * @param current {@link Map}
+   * @return boolean
+   */
+  private boolean isChangedMatching(final Map<String, AttributeValue> previous,
+      final Map<String, AttributeValue> current) {
+
+    boolean changed = false;
+
+    for (Map.Entry<String, AttributeValue> e : current.entrySet()) {
+
+      if (!e.getKey().equals("inserteddate") && !e.getKey().equals("lastModifiedDate")
+          && !e.getKey().equals("checksum")) {
+
+        AttributeValue av = previous.get(e.getKey());
+        if (av == null || !e.getValue().equals(av)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    return changed;
+  }
+
+  /**
    * Is {@link List} {@link DynamicObject} contain a non generated tag.
    * 
    * @param tags {@link List} {@link DynamicObject}
    * @return boolean
    */
   private boolean isDocumentUserTagged(final List<DynamicObject> tags) {
-    return tags != null
-        ? tags.stream().filter(t -> !SYSTEM_DEFINED_TAGS.contains(t.getString("key"))).count() > 0
-        : false;
+    return tags != null ? tags.stream().filter(t -> {
+      String key = t.getString("key");
+      return key != null && !SYSTEM_DEFINED_TAGS.contains(key);
+    }).count() > 0 : false;
   }
 
   @Override
@@ -1047,6 +1137,38 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
     String path0 = previous.containsKey("path") ? previous.get("path").s() : "";
     String path1 = current.containsKey("path") ? current.get("path").s() : "";
     return !path1.equals(path0) && !"".equals(path0);
+  }
+
+  /**
+   * Query For Document Attributes.
+   * 
+   * @param pk {@link AttributeValue}
+   * @param sk {@link AttributeValue}
+   * @param softDelete boolean
+   * @return {@link List} {@link Map}
+   */
+  private List<Map<String, AttributeValue>> queryDocumentAttributes(final AttributeValue pk,
+      final AttributeValue sk, final boolean softDelete) {
+
+    final int limit = 100;
+    Map<String, AttributeValue> startkey = null;
+    List<Map<String, AttributeValue>> list = new ArrayList<>();
+    QueryConfig config = new QueryConfig().projectionExpression(softDelete ? null : "PK,SK");
+
+    do {
+
+      QueryResponse response = this.dbService.queryBeginsWith(config, pk, sk, startkey, limit);
+
+      List<Map<String, AttributeValue>> attrs =
+          response.items().stream().collect(Collectors.toList());
+      list.addAll(attrs);
+
+      startkey = response.lastEvaluatedKey();
+
+    } while (startkey != null && !startkey.isEmpty());
+
+    return list;
+
   }
 
   /**
@@ -1180,36 +1302,61 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
     }
   }
 
-  /**
-   * Rename a document document.
-   * 
-   * @param documentId {@link String}
-   * @param documentValues {@link Map}
-   * @param folderIndex {@link List}
-   */
-  private void renameDuplicateDocumentIfNeeded(final String documentId,
-      final Map<String, AttributeValue> documentValues,
-      final List<Map<String, AttributeValue>> folderIndex) {
+  @Override
+  public boolean restoreSoftDeletedDocument(final String siteId, final String documentId) {
 
-    if (!folderIndex.isEmpty()) {
-      int len = folderIndex.size();
-      Map<String, AttributeValue> documentPath = folderIndex.get(len - 1);
+    boolean restored = false;
 
-      if (this.dbService.exists(documentPath.get(PK), documentPath.get(SK))) {
+    Map<String, AttributeValue> sdKeys = keysGeneric(siteId, SOFT_DELETE + PREFIX_DOCS, null);
+    AttributeValue pk = sdKeys.get(PK);
+    AttributeValue sk = AttributeValue.fromS(SOFT_DELETE + "document" + "#" + documentId);
 
-        String oldPath = documentValues.get("path").s();
-        String oldFilename = documentPath.get("path").s();
+    final int limit = 100;
 
-        String extension = Strings.getExtension(oldFilename);
-        String newFilename =
-            oldFilename.replaceAll("\\." + extension, " (" + documentId + ")" + "." + extension);
-        String newPath = oldPath.replaceAll(oldFilename, newFilename);
+    Map<String, AttributeValue> attr = this.dbService.get(pk, sk);
 
-        documentValues.put("path", AttributeValue.fromS(newPath));
-        documentPath.put(SK, AttributeValue.fromS(INDEX_FILE_SK + newFilename.toLowerCase()));
-        documentPath.put("path", AttributeValue.fromS(newFilename));
-      }
+    if (!attr.isEmpty()) {
+
+      List<Map<String, AttributeValue>> list = new ArrayList<>();
+      list.add(attr);
+
+      Map<String, AttributeValue> startkey = null;
+      QueryConfig config = new QueryConfig();
+
+      Map<String, AttributeValue> keys = keysDocument(siteId, documentId);
+
+      do {
+
+        QueryResponse response = this.dbService.queryBeginsWith(config,
+            fromS(SOFT_DELETE + keys.get(PK).s()), null, startkey, limit);
+
+        List<Map<String, AttributeValue>> attrs =
+            response.items().stream().collect(Collectors.toList());
+        list.addAll(attrs);
+
+        startkey = response.lastEvaluatedKey();
+
+      } while (startkey != null && !startkey.isEmpty());
+
+      restored = this.dbService.moveItems(list,
+          new DocumentRestoreMoveAttributeFunction(siteId, documentId));
+
+      String path = attr.get("path").s();
+      String userId = attr.get("userId").s();
+
+      DocumentItem item = new DocumentItemDynamoDb(documentId, new Date(), userId);
+      item.setPath(path);
+
+      List<Map<String, AttributeValue>> folderIndex =
+          this.folderIndexProcessor.generateIndex(siteId, item);
+
+      WriteRequestBuilder writeBuilder =
+          new WriteRequestBuilder().appends(this.documentTableName, folderIndex);
+
+      writeBuilder.batchWriteItem(this.dbClient);
     }
+
+    return restored;
   }
 
   /**
@@ -1301,30 +1448,23 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
 
     removeNullMetadata(document, documentValues);
 
-    boolean previousSameAsCurrent = previous.equals(current);
+    String documentVersionsTableName = this.versionsService.getDocumentVersionsTableName();
+    boolean hasDocumentChanged = documentVersionsTableName != null && !previous.isEmpty()
+        && isChangedMatching(previous, current);
 
-    if (!previousSameAsCurrent) {
+    if (hasDocumentChanged) {
       this.versionsService.addDocumentVersionAttributes(previous, documentValues);
     }
 
-    Collection<Map<String, AttributeValue>> previousList =
-        !previous.isEmpty() ? Arrays.asList(previous) : Collections.emptyList();
-
     List<Map<String, AttributeValue>> folderIndex =
         this.folderIndexProcessor.generateIndex(siteId, document);
-    folderIndex = updateFromExistingFolder(folderIndex);
-
-    if (!documentExists) {
-      renameDuplicateDocumentIfNeeded(document.getDocumentId(), documentValues, folderIndex);
-    } else if (isPathChanges(previous, documentValues)) {
-      this.folderIndexProcessor.deletePath(siteId, document.getDocumentId(),
-          previous.get("path").s());
+    if (!isEmpty(document.getPath())) {
+      documentValues.put("path", AttributeValue.fromS(document.getPath()));
     }
 
-    // update top level directory
-    if (folderIndex.size() > 1) {
-      int len = folderIndex.size();
-      folderIndex.get(len - 2).put("lastModifiedDate", documentValues.get("lastModifiedDate"));
+    if (isPathChanges(previous, documentValues)) {
+      this.folderIndexProcessor.deletePath(siteId, document.getDocumentId(),
+          previous.get("path").s());
     }
 
     List<Map<String, AttributeValue>> tagValues =
@@ -1334,16 +1474,15 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
         .append(this.documentTableName, documentValues).appends(this.documentTableName, tagValues)
         .appends(this.documentTableName, folderIndex);
 
-    String documentVersionsTableName = this.versionsService.getDocumentVersionsTableName();
-    if (documentVersionsTableName != null) {
-      writeBuilder = writeBuilder.appends(documentVersionsTableName, previousList);
+    if (hasDocumentChanged) {
+      writeBuilder = writeBuilder.appends(documentVersionsTableName, Arrays.asList(previous));
     }
 
     if (writeBuilder.batchWriteItem(this.dbClient)) {
 
       List<String> tagKeys =
           notNull(tags).stream().map(t -> t.getKey()).collect(Collectors.toList());
-      this.indexWriter.writeTagIndex(this.documentTableName, this.dbClient, siteId, tagKeys);
+      this.indexWriter.writeTagIndex(siteId, tagKeys);
 
       if (options.saveDocumentDate()) {
         saveDocumentDate(document);
@@ -1429,7 +1568,8 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
 
     boolean docexists = exists(siteId, doc.getDocumentId());
     List<DynamicObject> doctags = doc.getList("tags");
-    List<DocumentTag> tags = doctags.stream().map(t -> {
+
+    List<DocumentTag> tags = doctags.stream().filter(t -> t.containsKey("key")).map(t -> {
       DynamicObjectToDocumentTag transform = new DynamicObjectToDocumentTag(this.df);
       DocumentTag tag = transform.apply(t);
       tag.setInsertedDate(date);
@@ -1440,13 +1580,6 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
     if (!docexists && tags.isEmpty()) {
       tags.add(
           new DocumentTag(null, "untagged", "true", date, username, DocumentTagType.SYSTEMDEFINED));
-    }
-
-    if (doc.getPath() != null) {
-      if (tags.stream().filter(t -> t.getKey().equals("path")).findAny().isEmpty()) {
-        tags.add(new DocumentTag(null, "path", doc.getPath(), date, username,
-            DocumentTagType.SYSTEMDEFINED));
-      }
     }
 
     return tags;
@@ -1469,6 +1602,7 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
 
     item.setDocumentId(doc.getDocumentId());
     item.setPath(path);
+    item.setDeepLinkPath(doc.getDeepLinkPath());
     item.setContentType(doc.getContentType());
     item.setChecksum(doc.getChecksum());
     item.setContentLength(doc.getContentLength());
@@ -1476,6 +1610,8 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
     item.setBelongsToDocumentId(doc.getBelongsToDocumentId());
     item.setTagSchemaId(doc.getTagSchemaId());
     item.setMetadata(doc.getMetadata());
+
+    updatePathFromDeepLink(item);
 
     List<DocumentTag> tags = saveDocumentItemGenerateTags(siteId, doc, date, username);
 
@@ -1553,6 +1689,33 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
         .collect(Collectors.toList());
   }
 
+  /**
+   * Because Document checksum are set in the DocumentsS3Update.class, the correct checksum maybe in
+   * the previous loaded document.
+   * 
+   * @param document {@link DocumentItem}
+   * @param previous {@link Map}
+   */
+  private void updateCurrentChecksumFromPrevious(final DocumentItem document,
+      final Map<String, AttributeValue> previous) {
+    AttributeValue pchecksum = previous.get("checksum");
+    if (pchecksum != null && !isEmpty(pchecksum.s())) {
+      String checksum = document.getChecksum();
+      if (isEmpty(checksum) || isUuid(checksum)) {
+        document.setChecksum(pchecksum.s());
+      }
+    }
+  }
+
+  private void updateDeepLinkPath(final Map<String, AttributeValue> pkvalues,
+      final DocumentItem document) {
+    if (!isEmpty(document.getDeepLinkPath())) {
+      addS(pkvalues, "deepLinkPath", document.getDeepLinkPath());
+    } else {
+      addS(pkvalues, "deepLinkPath", "");
+    }
+  }
+
   @Override
   public void updateDocument(final String siteId, final String documentId,
       final Map<String, AttributeValue> attributes, final boolean updateVersioning) {
@@ -1581,44 +1744,15 @@ public class DocumentServiceImpl implements DocumentService, DbKeys {
       }
     }
 
-    this.dbService.updateFields(keys.get(PK), keys.get(SK), attributes);
+    this.dbService.updateValues(keys.get(PK), keys.get(SK), attributes);
   }
 
-  /**
-   * Update Folder Index from any existing Folder Index.
-   * 
-   * @param folderIndex {@link List} {@link Map}
-   * @return {@link List} {@link Map}
-   */
-  private List<Map<String, AttributeValue>> updateFromExistingFolder(
-      final List<Map<String, AttributeValue>> folderIndex) {
-
-    List<Map<String, AttributeValue>> indexKeys = folderIndex.stream()
-        .map(f -> Map.of(PK, f.get(PK), SK, f.get(SK))).collect(Collectors.toList());
-
-    if (!indexKeys.isEmpty()) {
-
-      List<Map<String, AttributeValue>> attrs = getBatch(indexKeys).get(this.documentTableName);
-
-      if (!notNull(attrs).isEmpty()) {
-
-        folderIndex.forEach(f -> {
-
-          Optional<Map<String, AttributeValue>> o = attrs.stream()
-              .filter(
-                  a -> a.get(PK).s().equals(f.get(PK).s()) && a.get(SK).s().equals(f.get(SK).s()))
-              .findFirst();
-
-          if (o.isPresent()) {
-            f.put("inserteddate", o.get().get("inserteddate"));
-            f.put("lastModifiedDate", o.get().get("lastModifiedDate"));
-            f.put("userId", o.get().get("userId"));
-          }
-
-        });
+  private void updatePathFromDeepLink(final DocumentItem item) {
+    if (!isEmpty(item.getDeepLinkPath())) {
+      String filename = Strings.getFilename(item.getDeepLinkPath());
+      if (!isEmpty(filename)) {
+        item.setPath(filename);
       }
     }
-
-    return folderIndex;
   }
 }

@@ -28,7 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
@@ -47,13 +47,10 @@ public class VersionRequestHandler implements ApiGatewayRequestHandler, ApiGatew
 
   @Override
   public ApiRequestHandlerResponse get(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
-    SsmService ssmService = awsservice.getExtension(SsmService.class);
-    String key = "/formkiq/" + awsservice.environment("APP_ENVIRONMENT") + "/version";
-
-    String version = ssmService.getParameterValue(key);
+    String version = getVersion(awsservice);
     List<String> modules = awsservice.environment().entrySet().stream()
         .filter(e -> e.getKey().startsWith("MODULE_") && "true".equals(e.getValue()))
         .map(e -> e.getKey().replaceAll("MODULE_", "")).collect(Collectors.toList());
@@ -65,5 +62,22 @@ public class VersionRequestHandler implements ApiGatewayRequestHandler, ApiGatew
   @Override
   public String getRequestUrl() {
     return "/version";
+  }
+
+  private String getVersion(final AwsServiceCache awsservice) {
+    SsmService ssmService = awsservice.getExtension(SsmService.class);
+    String key = "/formkiq/" + awsservice.environment("APP_ENVIRONMENT") + "/version";
+
+    String version = awsservice.environment("VERSION");
+    if (version == null) {
+      version = ssmService.getParameterValue(key);
+    }
+
+    return version;
+  }
+
+  @Override
+  public boolean isSiteIdRequired() {
+    return false;
   }
 }

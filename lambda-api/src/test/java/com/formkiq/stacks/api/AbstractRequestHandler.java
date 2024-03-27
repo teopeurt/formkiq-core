@@ -26,12 +26,14 @@ package com.formkiq.stacks.api;
 import static com.formkiq.testutils.aws.DynamoDbExtension.CACHE_TABLE;
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_TABLE;
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_VERSION_TABLE;
+import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENT_SYNCS_TABLE;
 import static com.formkiq.testutils.aws.TestServices.AWS_REGION;
 import static com.formkiq.testutils.aws.TestServices.BUCKET_NAME;
 import static com.formkiq.testutils.aws.TestServices.FORMKIQ_APP_ENVIRONMENT;
+import static com.formkiq.testutils.aws.TestServices.OCR_BUCKET_NAME;
 import static com.formkiq.testutils.aws.TestServices.STAGE_BUCKET_NAME;
-import static com.formkiq.testutils.aws.TypeSenseExtension.API_KEY;
-import static org.junit.Assert.assertEquals;
+import static com.formkiq.testutils.aws.TypesenseExtension.API_KEY;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockserver.integration.ClientAndServer.startClientAndServer;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -43,7 +45,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,21 +59,21 @@ import com.formkiq.aws.dynamodb.DynamicObject;
 import com.formkiq.aws.s3.S3Service;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestContext;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
+import com.formkiq.aws.sns.SnsService;
 import com.formkiq.aws.sqs.SqsService;
+import com.formkiq.aws.sqs.SqsServiceImpl;
 import com.formkiq.aws.ssm.SsmConnectionBuilder;
 import com.formkiq.aws.ssm.SsmService;
 import com.formkiq.aws.ssm.SsmServiceCache;
 import com.formkiq.lambda.apigateway.util.GsonUtil;
-import com.formkiq.plugins.tagschema.DocumentTagSchemaPluginEmpty;
+import com.formkiq.module.lambdaservices.AwsServiceCache;
+import com.formkiq.stacks.api.handler.TestCoreRequestHandler;
 import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.stacks.dynamodb.DocumentVersionServiceNoVersioning;
-import com.formkiq.testutils.aws.DynamoDbTestServices;
 import com.formkiq.testutils.aws.LambdaContextRecorder;
 import com.formkiq.testutils.aws.LambdaLoggerRecorder;
 import com.formkiq.testutils.aws.TestServices;
-import com.formkiq.testutils.aws.TypeSenseExtension;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import com.formkiq.testutils.aws.TypesenseExtension;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
 import software.amazon.awssdk.services.ssm.model.ParameterNotFoundException;
@@ -79,9 +83,18 @@ import software.amazon.awssdk.utils.IoUtils;
 /** Abstract class for testing API Requests. */
 public abstract class AbstractRequestHandler {
 
+  /** {@link TestCoreRequestHandler}. */
+  private static TestCoreRequestHandler handler;
   /** Port to run Test server. */
   private static final int PORT = 8080;
-
+  /** 500 Milliseconds. */
+  private static final long SLEEP = 500L;
+  /** SQS Sns Update Queue. */
+  private static final String SNS_SQS_CREATE_QUEUE = "sqssnsCreate" + UUID.randomUUID();
+  /** SQS Create Url. */
+  private static String snsDocumentEvent;
+  /** SQS Sns Create QueueUrl. */
+  private static String sqsDocumentEventUrl;
   /** Test server URL. */
   private static final String URL = "http://localhost:" + PORT;
 
@@ -92,21 +105,32 @@ public abstract class AbstractRequestHandler {
    */
   @BeforeAll
   public static void beforeAll() throws Exception {
+
     SsmConnectionBuilder ssmBuilder = TestServices.getSsmConnection(null);
     SsmService ssmService = new SsmServiceCache(ssmBuilder, 1, TimeUnit.DAYS);
     ssmService.putParameter("/formkiq/" + FORMKIQ_APP_ENVIRONMENT + "/api/DocumentsIamUrl", URL);
+
+    SqsService sqsService = new SqsServiceImpl(TestServices.getSqsConnection(null));
+    if (!sqsService.exists(SNS_SQS_CREATE_QUEUE)) {
+      sqsDocumentEventUrl = sqsService.createQueue(SNS_SQS_CREATE_QUEUE).queueUrl();
+    }
+
+    String queueSqsArn = sqsService.getQueueArn(sqsDocumentEventUrl);
+    SnsService snsService = new SnsService(TestServices.getSnsConnection(null));
+    snsDocumentEvent = snsService.createTopic("createDocument1").topicArn();
+    snsService.subscribe(snsDocumentEvent, "sqs", queueSqsArn);
   }
 
-  /** {@link CoreAwsServiceCache}. */
-  private CoreAwsServiceCache awsServices;
+  /** {@link AwsServiceCache}. */
+  private AwsServiceCache awsServices;
 
   /** {@link Context}. */
   private Context context = new LambdaContextRecorder();
+
   /** {@link LambdaLogger}. */
   private LambdaLoggerRecorder logger = (LambdaLoggerRecorder) this.context.getLogger();
   /** System Environment Map. */
   private Map<String, String> map = new HashMap<>();
-
   /** {@link ClientAndServer}. */
   private ClientAndServer mockServer = null;
 
@@ -183,28 +207,7 @@ public abstract class AbstractRequestHandler {
   @BeforeEach
   public void before() throws Exception {
 
-    this.map.put("DOCUMENT_VERSIONS_PLUGIN", DocumentVersionServiceNoVersioning.class.getName());
-    this.map.put("APP_ENVIRONMENT", FORMKIQ_APP_ENVIRONMENT);
-    this.map.put("DOCUMENTS_TABLE", DOCUMENTS_TABLE);
-    this.map.put("DOCUMENT_VERSIONS_TABLE", DOCUMENTS_VERSION_TABLE);
-    this.map.put("CACHE_TABLE", CACHE_TABLE);
-    this.map.put("DOCUMENTS_S3_BUCKET", BUCKET_NAME);
-    this.map.put("STAGE_DOCUMENTS_S3_BUCKET", STAGE_BUCKET_NAME);
-    this.map.put("AWS_REGION", AWS_REGION.toString());
-    this.map.put("DEBUG", "true");
-    this.map.put("SQS_DOCUMENT_FORMATS",
-        TestServices.getSqsDocumentFormatsQueueUrl(TestServices.getSqsConnection(null)));
-    this.map.put("DISTRIBUTION_BUCKET", "formkiq-distribution-us-east-pro");
-    this.map.put("FORMKIQ_TYPE", "core");
-    this.map.put("USER_AUTHENTICATION", "cognito");
-    this.map.put("WEBSOCKET_SQS_URL",
-        TestServices.getSqsWebsocketQueueUrl(TestServices.getSqsConnection(null)));
-    this.map.put("TYPESENSE_HOST", "http://localhost:" + TypeSenseExtension.getMappedPort());
-    this.map.put("TYPESENSE_API_KEY", API_KEY);
-
-    createApiRequestHandler(this.map);
-
-    this.awsServices = CoreAwsServiceCache.cast(new CoreRequestHandler().getAwsServices());
+    createApiRequestHandler("cognito");
 
     SqsService sqsservice = this.awsServices.getExtension(SqsService.class);
 
@@ -227,11 +230,35 @@ public abstract class AbstractRequestHandler {
    * @throws URISyntaxException URISyntaxException
    */
   public void createApiRequestHandler(final Map<String, String> prop) throws URISyntaxException {
-    AwsCredentials creds = AwsBasicCredentials.create("asd", "asd");
-    AbstractCoreRequestHandler.configureHandler(prop, creds,
-        DynamoDbTestServices.getDynamoDbConnection(null), TestServices.getS3Connection(null),
-        TestServices.getSsmConnection(null), TestServices.getSqsConnection(null),
-        new DocumentTagSchemaPluginEmpty());
+    handler = new TestCoreRequestHandler(prop);
+    this.awsServices = handler.getAwsServices();
+  }
+
+  protected void createApiRequestHandler(final String userAuthentication)
+      throws URISyntaxException {
+    this.map.put("DOCUMENT_VERSIONS_PLUGIN", DocumentVersionServiceNoVersioning.class.getName());
+    this.map.put("APP_ENVIRONMENT", FORMKIQ_APP_ENVIRONMENT);
+    this.map.put("DOCUMENTS_TABLE", DOCUMENTS_TABLE);
+    this.map.put("DOCUMENT_VERSIONS_TABLE", DOCUMENTS_VERSION_TABLE);
+    this.map.put("DOCUMENT_SYNC_TABLE", DOCUMENT_SYNCS_TABLE);
+    this.map.put("CACHE_TABLE", CACHE_TABLE);
+    this.map.put("DOCUMENTS_S3_BUCKET", BUCKET_NAME);
+    this.map.put("STAGE_DOCUMENTS_S3_BUCKET", STAGE_BUCKET_NAME);
+    this.map.put("OCR_S3_BUCKET", OCR_BUCKET_NAME);
+    this.map.put("SNS_DOCUMENT_EVENT", snsDocumentEvent);
+    this.map.put("AWS_REGION", AWS_REGION.toString());
+    this.map.put("DEBUG", "true");
+    this.map.put("SQS_DOCUMENT_FORMATS",
+        TestServices.getSqsDocumentFormatsQueueUrl(TestServices.getSqsConnection(null)));
+    this.map.put("DISTRIBUTION_BUCKET", "formkiq-distribution-us-east-pro");
+    this.map.put("FORMKIQ_TYPE", "core");
+    this.map.put("USER_AUTHENTICATION", userAuthentication);
+    this.map.put("WEBSOCKET_SQS_URL",
+        TestServices.getSqsWebsocketQueueUrl(TestServices.getSqsConnection(null)));
+    this.map.put("TYPESENSE_HOST", "http://localhost:" + TypesenseExtension.getMappedPort());
+    this.map.put("TYPESENSE_API_KEY", API_KEY);
+
+    createApiRequestHandler(this.map);
   }
 
   /**
@@ -272,11 +299,11 @@ public abstract class AbstractRequestHandler {
   }
 
   /**
-   * Get {@link CoreAwsServiceCache}.
+   * Get {@link AwsServiceCache}.
    * 
-   * @return {@link CoreAwsServiceCache}
+   * @return {@link AwsServiceCache}
    */
-  public CoreAwsServiceCache getAwsServices() {
+  public AwsServiceCache getAwsServices() {
     return this.awsServices;
   }
 
@@ -294,8 +321,8 @@ public abstract class AbstractRequestHandler {
    *
    * @return {@link CoreRequestHandler}
    */
-  public CoreRequestHandler getHandler() {
-    return new CoreRequestHandler();
+  public TestCoreRequestHandler getHandler() {
+    return handler;
   }
 
   /**
@@ -356,6 +383,29 @@ public abstract class AbstractRequestHandler {
   }
 
   /**
+   * Get Sqs Messages.
+   * 
+   * @return {@link List} {@link Message}
+   * @throws InterruptedException InterruptedException
+   */
+  public List<Message> getSqsMessages() throws InterruptedException {
+
+    SqsService sqsService = this.awsServices.getExtension(SqsService.class);
+
+    List<Message> msgs = sqsService.receiveMessages(sqsDocumentEventUrl).messages();
+    while (msgs.isEmpty()) {
+      Thread.sleep(SLEEP);
+      msgs = sqsService.receiveMessages(sqsDocumentEventUrl).messages();
+    }
+
+    for (Message msg : msgs) {
+      sqsService.deleteMessage(sqsDocumentEventUrl, msg.receiptHandle());
+    }
+
+    return msgs;
+  }
+
+  /**
    * Get SSM Parameter.
    * 
    * @param key {@link String}
@@ -387,7 +437,7 @@ public abstract class AbstractRequestHandler {
     InputStream is = new ByteArrayInputStream(s.getBytes(StandardCharsets.UTF_8));
     ByteArrayOutputStream outstream = new ByteArrayOutputStream();
 
-    new CoreRequestHandler().handleRequest(is, outstream, getMockContext());
+    handler.handleRequest(is, outstream, getMockContext());
 
     String response = new String(outstream.toByteArray(), "UTF-8");
     return response;
@@ -403,14 +453,26 @@ public abstract class AbstractRequestHandler {
    * @return {@link DynamicObject}
    * @throws IOException IOException
    */
-  @SuppressWarnings("unchecked")
   public DynamicObject handleRequest(final String file, final String siteId, final String username,
       final String cognitoGroups) throws IOException {
 
     ApiGatewayRequestEvent event = createRequest(file, siteId, username, cognitoGroups);
 
-    String response = handleRequest(event);
+    return handleRequestDynamic(event);
+  }
 
+  /**
+   * Handle Request.
+   * 
+   * @param event {@link ApiGatewayRequestEvent}
+   * @return {@link String}
+   * @throws IOException IOException
+   */
+  @SuppressWarnings("unchecked")
+  protected DynamicObject handleRequestDynamic(final ApiGatewayRequestEvent event)
+      throws IOException {
+
+    String response = handleRequest(event);
     return new DynamicObject(fromJson(response, Map.class));
   }
 
@@ -480,9 +542,8 @@ public abstract class AbstractRequestHandler {
    * @param value {@link String}
    */
   public void setEnvironment(final String key, final String value) {
-    this.map.put(key, value);
+    this.awsServices.environment().put(key, value);
   }
-
 
   /**
    * Set Path Parameter.
@@ -501,6 +562,7 @@ public abstract class AbstractRequestHandler {
     pathmap.put(parameter, value);
     event.setPathParameters(pathmap);
   }
+
 
   /**
    * Set Cognito Group.
@@ -543,6 +605,16 @@ public abstract class AbstractRequestHandler {
       this.mockServer.stop();
     }
     this.mockServer = null;
+  }
+
+  /**
+   * Convert Object to JSON.
+   * 
+   * @param obj {@link Object}
+   * @return {@link String}
+   */
+  protected String toJson(final Object obj) {
+    return GsonUtil.getInstance().toJson(obj);
   }
 
   /**

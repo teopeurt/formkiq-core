@@ -23,6 +23,7 @@
  */
 package com.formkiq.stacks.api.handler;
 
+import static com.formkiq.aws.dynamodb.objects.Objects.throwIfNull;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_OK;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -31,20 +32,26 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.dynamodb.DynamicObject;
+import com.formkiq.aws.dynamodb.model.DocumentItem;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
 import com.formkiq.aws.services.lambda.ApiMapResponse;
 import com.formkiq.aws.services.lambda.ApiRequestHandlerResponse;
-import com.formkiq.aws.services.lambda.exceptions.BadException;
+import com.formkiq.aws.services.lambda.exceptions.DocumentNotFoundException;
 import com.formkiq.module.actions.Action;
 import com.formkiq.module.actions.ActionType;
+import com.formkiq.module.actions.services.ActionsNotificationService;
 import com.formkiq.module.actions.services.ActionsService;
 import com.formkiq.module.actions.services.ActionsValidator;
 import com.formkiq.module.actions.services.ActionsValidatorImpl;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
+import com.formkiq.stacks.dynamodb.ConfigService;
+import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.validation.ValidationError;
+import com.formkiq.validation.ValidationException;
 
 /** {@link ApiGatewayRequestHandler} for "/documents/{documentId}/actions". */
 public class DocumentsActionsRequestHandler
@@ -58,23 +65,34 @@ public class DocumentsActionsRequestHandler
 
   @Override
   public ApiRequestHandlerResponse get(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
-    String siteId = authorizer.getSiteId();
+    String siteId = authorization.siteId();
     String documentId = event.getPathParameters().get("documentId");
 
-    List<Map<String, Object>> list = new ArrayList<>();
+    DocumentItem item = getDocument(awsservice, siteId, documentId);
+    throwIfNull(item, new DocumentNotFoundException(documentId));
 
     ActionsService service = awsservice.getExtension(ActionsService.class);
     List<Action> actions = service.getActions(siteId, documentId);
 
+    List<Map<String, Object>> list = new ArrayList<>();
     for (Action action : actions) {
       Map<String, Object> map = new HashMap<>();
       map.put("userId", action.userId());
-      map.put("status", action.status().name().toLowerCase());
-      map.put("type", action.type().name().toLowerCase());
+      map.put("status", action.status().name());
+      map.put("type", action.type().name());
       map.put("parameters", action.parameters());
+      map.put("metadata", action.metadata());
+      map.put("insertedDate", action.insertedDate());
+      map.put("startDate", action.startDate());
+      map.put("completedDate", action.completedDate());
+      map.put("message", action.message());
+      map.put("workflowId", action.workflowId());
+      map.put("queueId", action.queueId());
+      map.put("workflowStepId", action.workflowStepId());
+
       list.add(map);
     }
 
@@ -83,49 +101,54 @@ public class DocumentsActionsRequestHandler
     return new ApiRequestHandlerResponse(SC_OK, resp);
   }
 
+  private DocumentItem getDocument(final AwsServiceCache awsservice, final String siteId,
+      final String documentId) {
+    DocumentService documentService = awsservice.getExtension(DocumentService.class);
+    DocumentItem item = documentService.findDocument(siteId, documentId);
+    return item;
+  }
+
   @Override
   public String getRequestUrl() {
     return "/documents/{documentId}/actions";
   }
 
+
   @SuppressWarnings("unchecked")
   @Override
   public ApiRequestHandlerResponse post(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
-    String siteId = authorizer.getSiteId();
+    String siteId = authorization.siteId();
     String documentId = event.getPathParameters().get("documentId");
-    String userId = getCallingCognitoUsername(event);
+    String userId = authorization.username();
 
-    Map<String, Object> body = fromBodyToMap(logger, event);
+    DocumentItem item = getDocument(awsservice, siteId, documentId);
+    throwIfNull(item, new DocumentNotFoundException(documentId));
+
+    Map<String, Object> body = fromBodyToMap(event);
 
     List<Map<String, Object>> list = (List<Map<String, Object>>) body.get("actions");
     List<Action> actions = toActions(list, userId);
 
-    ActionsValidator validator = new ActionsValidatorImpl();
+    validate(awsservice, siteId, actions);
 
-    List<Collection<ValidationError>> errors = validator.validation(actions);
+    ActionsService service = awsservice.getExtension(ActionsService.class);
+    int idx = service.getActions(siteId, documentId).size();
 
-    Optional<Collection<ValidationError>> firstError =
-        errors.stream().filter(e -> !e.isEmpty()).findFirst();
-
-    if (firstError.isEmpty()) {
-
-      ActionsService service = awsservice.getExtension(ActionsService.class);
-      int idx = service.getActions(siteId, documentId).size();
-
-      for (Action a : actions) {
-        service.saveAction(siteId, documentId, a, idx);
-        idx++;
-      }
-
-      ApiMapResponse resp = new ApiMapResponse();
-      resp.setMap(Map.of("message", "Actions saved"));
-      return new ApiRequestHandlerResponse(SC_OK, resp);
+    for (Action a : actions) {
+      service.saveAction(siteId, documentId, a, idx);
+      idx++;
     }
 
-    throw new BadException("missing/invalid 'type' in body");
+    ActionsNotificationService notificationService =
+        awsservice.getExtension(ActionsNotificationService.class);
+    notificationService.publishNextActionEvent(actions, siteId, documentId);
+
+    ApiMapResponse resp = new ApiMapResponse();
+    resp.setMap(Map.of("message", "Actions saved"));
+    return new ApiRequestHandlerResponse(SC_OK, resp);
   }
 
   @SuppressWarnings("unchecked")
@@ -150,5 +173,21 @@ public class DocumentsActionsRequestHandler
     });
 
     return actions;
+  }
+
+  private void validate(final AwsServiceCache awsservice, final String siteId,
+      final List<Action> actions) throws ValidationException {
+    ActionsValidator validator = new ActionsValidatorImpl();
+
+    ConfigService configsService = awsservice.getExtension(ConfigService.class);
+    DynamicObject configs = configsService.get(siteId);
+    List<Collection<ValidationError>> errors = validator.validation(actions, configs);
+
+    Optional<Collection<ValidationError>> firstError =
+        errors.stream().filter(e -> !e.isEmpty()).findFirst();
+
+    if (!firstError.isEmpty()) {
+      throw new ValidationException(firstError.get());
+    }
   }
 }

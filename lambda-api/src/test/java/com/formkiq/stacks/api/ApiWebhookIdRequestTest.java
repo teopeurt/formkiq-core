@@ -23,10 +23,11 @@
  */
 package com.formkiq.stacks.api;
 
+import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.DEFAULT_SITE_ID;
 import static com.formkiq.testutils.aws.TestServices.FORMKIQ_APP_ENVIRONMENT;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
@@ -36,12 +37,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.lambda.apigateway.util.GsonUtil;
+import com.formkiq.stacks.dynamodb.WebhooksService;
 import com.formkiq.testutils.aws.DynamoDbExtension;
 import com.formkiq.testutils.aws.LocalStackExtension;
 
 /** Unit Tests for request /webhooks/{webhookId}. */
-@ExtendWith(LocalStackExtension.class)
 @ExtendWith(DynamoDbExtension.class)
+@ExtendWith(LocalStackExtension.class)
 public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
 
   /**
@@ -53,17 +55,21 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
   @Test
   public void testDeleteWebhooks01() throws Exception {
     // given
-    String response = handleRequest(toRequestEvent("/request-post-webhooks01.json"));
+    ApiGatewayRequestEvent event = toRequestEvent("/request-post-webhooks01.json");
+    event.setQueryStringParameters(Map.of("siteId", "default"));
+
+    String response = handleRequest(event);
     Map<String, String> m = GsonUtil.getInstance().fromJson(response, Map.class);
-    assertEquals("200.0", String.valueOf(m.get("statusCode")));
+    assertEquals("201.0", String.valueOf(m.get("statusCode")));
     Map<String, Object> result = GsonUtil.getInstance().fromJson(m.get("body"), Map.class);
     assertEquals("default", result.get("siteId"));
-    assertNotNull(result.get("id"));
+    assertNotNull(result.get("webhookId"));
 
-    String id = result.get("id").toString();
+    String webhookId = result.get("webhookId").toString();
 
-    ApiGatewayRequestEvent event = toRequestEvent("/request-delete-webhooks-webhookid01.json");
-    setPathParameter(event, "webhookId", id);
+    event = toRequestEvent("/request-delete-webhooks-webhookid01.json");
+    setPathParameter(event, "webhookId", webhookId);
+    event.setQueryStringParameters(Map.of("siteId", "default"));
 
     // when
     response = handleRequest(event);
@@ -113,18 +119,20 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
   public void testDeleteWebhooks03() throws Exception {
     // given
     ApiGatewayRequestEvent req = toRequestEvent("/request-post-webhooks01.json");
+    req.setQueryStringParameters(Map.of("siteId", "default"));
     req.setBody("{\"name\":\"john smith\",tags:[{key:\"dynamodb\"}]}");
 
     String response = handleRequest(req);
     Map<String, String> m = GsonUtil.getInstance().fromJson(response, Map.class);
-    assertEquals("200.0", String.valueOf(m.get("statusCode")));
+    assertEquals("201.0", String.valueOf(m.get("statusCode")));
     Map<String, Object> result = GsonUtil.getInstance().fromJson(m.get("body"), Map.class);
     assertEquals("default", result.get("siteId"));
-    assertNotNull(result.get("id"));
-    String id = result.get("id").toString();
+    assertNotNull(result.get("webhookId"));
+    String webhookId = result.get("webhookId").toString();
 
     ApiGatewayRequestEvent event = toRequestEvent("/request-delete-webhooks-webhookid01.json");
-    setPathParameter(event, "webhookId", id);
+    event.setQueryStringParameters(Map.of("siteId", "default"));
+    setPathParameter(event, "webhookId", webhookId);
 
     // when
     response = handleRequest(event);
@@ -138,7 +146,7 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
     assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
 
     event = toRequestEvent("/request-get-webhooks-webhookid-tags01.json");
-    setPathParameter(event, "webhookId", id);
+    setPathParameter(event, "webhookId", webhookId);
 
     // when
     response = handleRequest(event);
@@ -163,18 +171,18 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
       ApiGatewayRequestEvent event = toRequestEvent("/request-post-webhooks01.json");
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
 
       String response = handleRequest(event);
       Map<String, String> m = GsonUtil.getInstance().fromJson(response, Map.class);
-      assertEquals("200.0", String.valueOf(m.get("statusCode")));
+      assertEquals("201.0", String.valueOf(m.get("statusCode")));
       Map<String, Object> result = GsonUtil.getInstance().fromJson(m.get("body"), Map.class);
-      assertNotNull(result.get("id"));
-      String id = result.get("id").toString();
+      assertNotNull(result.get("webhookId"));
+      String webhookId = result.get("webhookId").toString();
 
       event = toRequestEvent("/request-get-webhooks-webhookid01.json");
-      setPathParameter(event, "webhookId", id);
-      addParameter(event, "siteId", siteId);
+      setPathParameter(event, "webhookId", webhookId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
 
       // when
       response = handleRequest(event);
@@ -197,13 +205,13 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
       }
 
       assertNotNull(result.get("id"));
-      id = result.get("id").toString();
+      webhookId = result.get("id").toString();
 
       assertNotNull(result.get("insertedDate"));
       assertEquals("john smith", result.get("name"));
       assertEquals("test@formkiq.com", result.get("userId"));
 
-      verifyUrl(siteId, id, result, true);
+      verifyUrl(siteId, webhookId, result, true);
     }
   }
 
@@ -221,19 +229,19 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
       ApiGatewayRequestEvent event = toRequestEvent("/request-post-webhooks01.json");
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
       event.setBody("{\"name\":\"john smith\",\"enabled\":\"private\"}");
 
       String response = handleRequest(event);
       Map<String, String> m = GsonUtil.getInstance().fromJson(response, Map.class);
-      assertEquals("200.0", String.valueOf(m.get("statusCode")));
+      assertEquals("201.0", String.valueOf(m.get("statusCode")));
       Map<String, Object> result = GsonUtil.getInstance().fromJson(m.get("body"), Map.class);
-      assertNotNull(result.get("id"));
-      String id = result.get("id").toString();
+      assertNotNull(result.get("webhookId"));
+      String webhookId = result.get("webhookId").toString();
 
       event = toRequestEvent("/request-get-webhooks-webhookid01.json");
-      setPathParameter(event, "webhookId", id);
-      addParameter(event, "siteId", siteId);
+      setPathParameter(event, "webhookId", webhookId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
 
       // when
       response = handleRequest(event);
@@ -256,13 +264,13 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
       }
 
       assertNotNull(result.get("id"));
-      id = result.get("id").toString();
+      webhookId = result.get("id").toString();
 
       assertNotNull(result.get("insertedDate"));
       assertEquals("john smith", result.get("name"));
       assertEquals("test@formkiq.com", result.get("userId"));
 
-      verifyUrl(siteId, id, result, false);
+      verifyUrl(siteId, webhookId, result, false);
     }
   }
 
@@ -294,12 +302,12 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
-      String id =
-          getAwsServices().webhookService().saveWebhook(siteId, "test", "joe", date, "true");
+      String id = getAwsServices().getExtension(WebhooksService.class).saveWebhook(siteId, "test",
+          "joe", date, "true");
 
       ApiGatewayRequestEvent event = toRequestEvent("/request-patch-webhooks-webhookid01.json");
       setPathParameter(event, "webhookId", id);
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
       event.setBody("{\"name\":\"john smith2\",\"enabled\":false}");
 
       // when
@@ -318,7 +326,7 @@ public class ApiWebhookIdRequestTest extends AbstractRequestHandler {
       // given
       event = toRequestEvent("/request-get-webhooks-webhookid01.json");
       setPathParameter(event, "webhookId", id);
-      addParameter(event, "siteId", siteId);
+      addParameter(event, "siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
 
       // when
       response = handleRequest(event);

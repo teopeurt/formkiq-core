@@ -23,24 +23,29 @@
  */
 package com.formkiq.stacks.console;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.containers.localstack.LocalStackContainer.Service;
 import org.testcontainers.utility.DockerImageName;
+
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.formkiq.aws.s3.S3ConnectionBuilder;
 import com.formkiq.aws.s3.S3Service;
+
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -57,7 +62,7 @@ public class ConsoleInstallHandlerTest {
 
   /** LocalStack {@link DockerImageName}. */
   private static DockerImageName localStackImage =
-      DockerImageName.parse("localstack/localstack:0.12.2");
+      DockerImageName.parse("localstack/localstack:2.1");
   /** {@link LocalStackContainer}. */
   private static LocalStackContainer localStackInstance =
       new LocalStackContainer(localStackImage).withServices(Service.S3);
@@ -73,7 +78,7 @@ public class ConsoleInstallHandlerTest {
    * @throws InterruptedException InterruptedException
    * @throws URISyntaxException URISyntaxException
    */
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() throws IOException, URISyntaxException, InterruptedException {
 
     AwsCredentialsProvider cred = StaticCredentialsProvider
@@ -81,8 +86,9 @@ public class ConsoleInstallHandlerTest {
 
     localStackInstance.start();
 
-    s3Connection = new S3ConnectionBuilder().setCredentials(cred).setRegion(Region.US_EAST_1)
-        .setEndpointOverride(localStackInstance.getEndpointOverride(Service.S3).toString());
+    s3Connection = new S3ConnectionBuilder(false).setCredentials(cred).setRegion(Region.US_EAST_1)
+        .setEndpointOverride(
+            new URI(localStackInstance.getEndpointOverride(Service.S3).toString()));
 
     s3 = new S3Service(s3Connection);
 
@@ -106,7 +112,7 @@ public class ConsoleInstallHandlerTest {
   private LambdaLoggerRecorder logger = this.context.getLoggerRecorder();
 
   /** before. */
-  @Before
+  @BeforeEach
   public void before() {
 
     Map<String, String> map = new HashMap<>();
@@ -120,7 +126,7 @@ public class ConsoleInstallHandlerTest {
     map.put("API_WEBSOCKET_URL", "wss://me.execute-api.us-east-1.amazonaws.com/prod/");
     map.put("BRAND", "24hourcharts");
     map.put("ALLOW_ADMIN_CREATE_USER_ONLY", "false");
-    map.put("COGNITO_HOSTED_UI", "https://test2622653865277.auth.us-east-2.amazoncognito.com");
+    map.put("COGNITO_HOSTED_UI", "https://test2111111111111111.auth.us-east-2.amazoncognito.com");
     map.put("USER_AUTHENTICATION", "cognito");
     map.put("COGNITO_CONFIG_BUCKET", CONSOLE_BUCKET);
     map.put("DOMAIN", "dev");
@@ -140,17 +146,6 @@ public class ConsoleInstallHandlerTest {
    * Create CloudFormation Input such as.
    *
    * @param requestType {@link String}
-   * 
-   *        <pre>
-   * { "RequestType": "Create",
-   * "ServiceToken": "arn:aws:lambda:...:function:route53Dependency",
-   * "ResponseURL": "https://cloudformation-custom-resource", "StackId":
-   * "arn:aws:cloudformation:eu-west-1:...", "RequestId":
-   * "afd8d7c5-9376-4013-8b3b-307517b8719e", "LogicalResourceId": "Route53",
-   * "ResourceType": "Custom::Route53Dependency", "ResourceProperties": {
-   * "ServiceToken": "arn:aws:lambda:...:function:route53Dependency",
-   * "DomainName": "example.com" } }
-   *        </pre>
    *
    * @return {@link Map}
    */
@@ -204,29 +199,31 @@ public class ConsoleInstallHandlerTest {
 
 
     assertEquals("font/woff2",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/font.woff2").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/font.woff2", null).getContentType());
 
-    assertEquals("text/css", s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.css").getContentType());
+    assertEquals("text/css",
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.css", null).getContentType());
 
     assertEquals("application/vnd.ms-fontobject",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.eot").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.eot", null).getContentType());
 
     assertEquals("image/x-icon",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ico").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ico", null).getContentType());
 
-    assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.js").getContentType()
+    assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.js", null).getContentType()
         .endsWith("/javascript"));
 
     assertEquals("image/svg+xml",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.svg").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.svg", null).getContentType());
 
-    assertEquals("font/ttf", s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ttf").getContentType());
+    assertEquals("font/ttf",
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ttf", null).getContentType());
 
     assertEquals("text/plain",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.txt").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.txt", null).getContentType());
 
     assertEquals("font/woff",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.woff").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.woff", null).getContentType());
 
     // given
     input = createInput("Delete");
@@ -271,39 +268,41 @@ public class ConsoleInstallHandlerTest {
     assertTrue(connection.contains("\"Data\":{\"Message\":\"Request Update was successful!\""));
 
     assertEquals("font/woff2",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/font.woff2").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/font.woff2", null).getContentType());
 
-    assertEquals("text/css", s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.css").getContentType());
+    assertEquals("text/css",
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.css", null).getContentType());
 
     assertEquals("application/vnd.ms-fontobject",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.eot").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.eot", null).getContentType());
 
     assertEquals("image/x-icon",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ico").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ico", null).getContentType());
 
-    assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.js").getContentType()
+    assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.js", null).getContentType()
         .endsWith("/javascript"));
 
     assertEquals("image/svg+xml",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.svg").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.svg", null).getContentType());
 
-    assertEquals("font/ttf", s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ttf").getContentType());
+    assertEquals("font/ttf",
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.ttf", null).getContentType());
 
     assertEquals("text/plain",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.txt").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.txt", null).getContentType());
 
     assertEquals("font/woff",
-        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.woff").getContentType());
+        s3.getObjectMetadata(CONSOLE_BUCKET, "0.1/test.woff", null).getContentType());
   }
 
   private void verifyCognitoConfig() {
     assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET,
-        "formkiq/cognito/dev/CustomMessage_AdminCreateUser/Message").isObjectExists());
-    assertTrue(
-        s3.getObjectMetadata(CONSOLE_BUCKET, "formkiq/cognito/dev/CustomMessage_SignUp/Message")
-            .isObjectExists());
+        "formkiq/cognito/dev/CustomMessage_AdminCreateUser/Message", null).isObjectExists());
+    assertTrue(s3
+        .getObjectMetadata(CONSOLE_BUCKET, "formkiq/cognito/dev/CustomMessage_SignUp/Message", null)
+        .isObjectExists());
     assertTrue(s3.getObjectMetadata(CONSOLE_BUCKET,
-        "formkiq/cognito/dev/CustomMessage_ForgotPassword/Message").isObjectExists());
+        "formkiq/cognito/dev/CustomMessage_ForgotPassword/Message", null).isObjectExists());
   }
 
   /**
@@ -371,7 +370,7 @@ public class ConsoleInstallHandlerTest {
         + "  \"clientId\": \"7223423m2pfgf34qnfokb2po2l\",%n" + "  \"consoleVersion\": \"0.1\",%n"
         + "  \"brand\": \"24hourcharts\",%n" + "  \"userAuthentication\": \"cognito\",%n"
         + "  \"authApi\": \"https://auth.execute-api.us-east-1.amazonaws.com/prod/\",%n"
-        + "  \"cognitoHostedUi\": \"https://test2622653865277.auth.us-east-2.amazoncognito.com\"%n"
+        + "  \"cognitoHostedUi\": \"https://test2111111111111111.auth.us-east-2.amazoncognito.com\"%n"
         + "}");
 
     assertTrue(this.logger.containsString("writing Cognito config: " + config));

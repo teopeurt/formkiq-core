@@ -24,9 +24,9 @@
 package com.formkiq.stacks.lambda.s3;
 
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.createDatabaseKey;
-import static com.formkiq.module.documentevents.DocumentEventType.CREATE;
-import static com.formkiq.module.documentevents.DocumentEventType.DELETE;
-import static com.formkiq.module.documentevents.DocumentEventType.UPDATE;
+import static com.formkiq.module.events.document.DocumentEventType.CREATE;
+import static com.formkiq.module.events.document.DocumentEventType.DELETE;
+import static com.formkiq.module.events.document.DocumentEventType.UPDATE;
 import static com.formkiq.stacks.dynamodb.DocumentService.MAX_RESULTS;
 import static com.formkiq.stacks.lambda.s3.util.FileUtils.loadFile;
 import static com.formkiq.stacks.lambda.s3.util.FileUtils.loadFileAsMap;
@@ -34,11 +34,12 @@ import static com.formkiq.testutils.aws.DynamoDbExtension.CACHE_TABLE;
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_TABLE;
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_VERSION_TABLE;
 import static com.formkiq.testutils.aws.TestServices.AWS_REGION;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockserver.integration.ClientAndServer.startClientAndServer;
 import static org.mockserver.model.HttpRequest.request;
 import java.io.IOException;
@@ -46,7 +47,6 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
@@ -62,28 +62,34 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockserver.integration.ClientAndServer;
-import org.testcontainers.containers.localstack.LocalStackContainer.Service;
 import com.formkiq.aws.dynamodb.DbKeys;
+import com.formkiq.aws.dynamodb.DynamoDbAwsServiceRegistry;
 import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
 import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
 import com.formkiq.aws.dynamodb.model.DocumentTagType;
 import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
+import com.formkiq.aws.dynamodb.schema.DocumentSchema;
+import com.formkiq.aws.s3.S3AwsServiceRegistry;
 import com.formkiq.aws.s3.S3ConnectionBuilder;
 import com.formkiq.aws.s3.S3Service;
+import com.formkiq.aws.sns.SnsAwsServiceRegistry;
 import com.formkiq.aws.sns.SnsConnectionBuilder;
 import com.formkiq.aws.sns.SnsService;
+import com.formkiq.aws.sqs.SqsAwsServiceRegistry;
 import com.formkiq.aws.sqs.SqsConnectionBuilder;
 import com.formkiq.aws.sqs.SqsService;
-import com.formkiq.aws.ssm.SsmConnectionBuilder;
+import com.formkiq.aws.sqs.SqsServiceImpl;
+import com.formkiq.aws.ssm.SmsAwsServiceRegistry;
 import com.formkiq.aws.ssm.SsmService;
-import com.formkiq.aws.ssm.SsmServiceCache;
 import com.formkiq.module.actions.Action;
 import com.formkiq.module.actions.ActionStatus;
 import com.formkiq.module.actions.ActionType;
 import com.formkiq.module.actions.services.ActionsService;
 import com.formkiq.module.actions.services.ActionsServiceDynamoDb;
+import com.formkiq.module.lambdaservices.AwsServiceCache;
+import com.formkiq.module.lambdaservices.AwsServiceCacheBuilder;
 import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.stacks.dynamodb.DocumentServiceImpl;
 import com.formkiq.stacks.dynamodb.DocumentVersionServiceNoVersioning;
@@ -97,13 +103,15 @@ import com.formkiq.testutils.aws.LocalStackExtension;
 import com.formkiq.testutils.aws.TestServices;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.s3.model.Tag;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
-import software.amazon.awssdk.services.ssm.SsmClient;
 
 /** {@link DocumentsS3Update} Unit Tests. */
 @ExtendWith(DynamoDbExtension.class)
@@ -136,7 +144,7 @@ public class DocumentsS3UpdateTest implements DbKeys {
   private static S3Service s3service;
   /** {@link DocumentService}. */
   private static DocumentServiceImpl service;
-  /** 500 Milliseconds. */
+  /** 500 SECONDS. */
   private static final long SLEEP = 500L;
   /** SQS Sns Update Queue. */
   private static final String SNS_SQS_CREATE_QUEUE = "sqssnsCreate1";
@@ -146,16 +154,14 @@ public class DocumentsS3UpdateTest implements DbKeys {
   private static String snsDocumentEvent;
   /** {@link SnsService}. */
   private static SnsService snsService;
-  /** {@link SqsConnectionBuilder}. */
-  private static SqsConnectionBuilder sqsBuilder;
   /** SQS Sns Create QueueUrl. */
   private static String sqsDocumentEventUrl;
   /** {@link SqsService}. */
   private static SqsService sqsService;
-  /** {@link SsmConnectionBuilder}. */
-  private static SsmConnectionBuilder ssmBuilder;
+  /** {@link AwsServiceCache}. */
+  private static AwsServiceCache awsServices;
   /** Test Timeout. */
-  private static final long TEST_TIMEOUT = 30000L;
+  private static final long TEST_TIMEOUT = 30;
   /** Test server URL. */
   private static final String URL = "http://localhost:" + PORT;
 
@@ -178,24 +184,13 @@ public class DocumentsS3UpdateTest implements DbKeys {
   public static void beforeClass() throws URISyntaxException, InterruptedException, IOException {
 
     s3Builder = TestServices.getS3Connection(null);
-    sqsBuilder = TestServices.getSqsConnection(null);
-    dbBuilder = DynamoDbTestServices.getDynamoDbConnection(null);
+    dbBuilder = DynamoDbTestServices.getDynamoDbConnection();
     db = dbBuilder.build();
     dbHelper = DynamoDbTestServices.getDynamoDbHelper(null);
     snsBuilder = TestServices.getSnsConnection(null);
-    ssmBuilder = TestServices.getSsmConnection(null);
 
-    SsmService ssmService = new SsmServiceCache(ssmBuilder, 1, TimeUnit.DAYS);
-
-    try (SsmClient ssmClient = ssmBuilder.build()) {
-      ssmService.putParameter("/formkiq/" + APP_ENVIRONMENT + "/api/DocumentsIamUrl", URL);
-    }
-
-    sqsService = new SqsService(sqsBuilder);
-
-    service = new DocumentServiceImpl(dbBuilder, DOCUMENTS_TABLE,
-        new DocumentVersionServiceNoVersioning());
-    actionsService = new ActionsServiceDynamoDb(dbBuilder, DOCUMENTS_TABLE);
+    SqsConnectionBuilder sqsBuilder = TestServices.getSqsConnection(null);
+    sqsService = new SqsServiceImpl(sqsBuilder);
 
     if (!sqsService.exists(ERROR_SQS_QUEUE)) {
       sqsService.createQueue(ERROR_SQS_QUEUE);
@@ -211,13 +206,45 @@ public class DocumentsS3UpdateTest implements DbKeys {
     snsService = new SnsService(snsBuilder);
 
     snsDocumentEvent = snsService.createTopic("createDocument1").topicArn();
-    snsService.subscribe(snsDocumentEvent, "sqs", sqsDocumentEventUrl);
+
+    String sqsQueueArn = sqsService.getQueueArn(sqsDocumentEventUrl);
+    snsService.subscribe(snsDocumentEvent, "sqs", sqsQueueArn);
 
     dbHelper = new DynamoDbHelper(dbBuilder);
-    if (!dbHelper.isTableExists(DOCUMENTS_TABLE)) {
-      dbHelper.createDocumentsTable(DOCUMENTS_TABLE);
-      dbHelper.createCacheTable(CACHE_TABLE);
+
+    try (DynamoDbClient dbClient = dbBuilder.build()) {
+      DocumentSchema schema = new DocumentSchema(dbClient);
+      schema.createDocumentsTable(DOCUMENTS_TABLE);
+      schema.createCacheTable(CACHE_TABLE);
     }
+
+    service = new DocumentServiceImpl(dbBuilder, DOCUMENTS_TABLE,
+        new DocumentVersionServiceNoVersioning());
+    actionsService = new ActionsServiceDynamoDb(dbBuilder, DOCUMENTS_TABLE);
+
+    Map<String, String> map = new HashMap<>();
+    map.put("DOCUMENTS_TABLE", DOCUMENTS_TABLE);
+    map.put("DOCUMENT_VERSIONS_TABLE", DOCUMENTS_VERSION_TABLE);
+    map.put("SNS_DOCUMENT_EVENT", snsDocumentEvent);
+    map.put("AWS_REGION", AWS_REGION.id());
+    map.put("APP_ENVIRONMENT", APP_ENVIRONMENT);
+    map.put("SNS_DOCUMENT_EVENT", snsDocumentEvent);
+    map.put("DOCUMENT_VERSIONS_PLUGIN", DocumentVersionServiceNoVersioning.class.getName());
+
+    AwsCredentials creds = AwsBasicCredentials.create("aaa", "bbb");
+    StaticCredentialsProvider credentialsProvider = StaticCredentialsProvider.create(creds);
+
+    awsServices =
+        new AwsServiceCacheBuilder(map, TestServices.getEndpointMap(), credentialsProvider)
+            .addService(new DynamoDbAwsServiceRegistry(), new S3AwsServiceRegistry(),
+                new SnsAwsServiceRegistry(), new SqsAwsServiceRegistry(),
+                new SmsAwsServiceRegistry())
+            .build();
+
+    handler = new DocumentsS3Update(awsServices);
+
+    SsmService ssmService = awsServices.getExtension(SsmService.class);
+    ssmService.putParameter("/formkiq/" + APP_ENVIRONMENT + "/api/DocumentsIamUrl", URL);
   }
 
   /** {@link LambdaContextRecorder}. */
@@ -227,15 +254,12 @@ public class DocumentsS3UpdateTest implements DbKeys {
   private Gson gson = new GsonBuilder().create();
 
   /** {@link DocumentsS3Update}. */
-  private DocumentsS3Update handler;
+  private static DocumentsS3Update handler;
 
   /** {@link LambdaLoggerRecorder}. */
   private LambdaLoggerRecorder logger;
   /** {@link ClientAndServer}. */
   private ClientAndServer mockServer;
-
-  /** FormKiQ Modules. */
-  private List<String> modules = new ArrayList<>();
 
   private void addS3File(final String key, final String contentType, final boolean addTags,
       final String content) {
@@ -352,22 +376,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
     dbHelper.truncateTable(DOCUMENTS_TABLE);
     service.setLastShortDate(null);
 
-    Map<String, String> map = new HashMap<>();
-    map.put("DOCUMENTS_TABLE", DOCUMENTS_TABLE);
-    map.put("DOCUMENT_VERSIONS_TABLE", DOCUMENTS_VERSION_TABLE);
-    map.put("SQS_ERROR_URL",
-        TestServices.getEndpointOverride(Service.SQS).toString() + "/queue/" + ERROR_SQS_QUEUE);
-    map.put("SNS_DOCUMENT_EVENT", snsDocumentEvent);
-    map.put("AWS_REGION", AWS_REGION.id());
-    map.put("APP_ENVIRONMENT", APP_ENVIRONMENT);
-    map.put("DOCUMENT_VERSIONS_PLUGIN", DocumentVersionServiceNoVersioning.class.getName());
-
-    this.modules.forEach(m -> map.put("MODULE_" + m, "true"));
-
     this.context = new LambdaContextRecorder();
     this.logger = (LambdaLoggerRecorder) this.context.getLogger();
-    this.handler =
-        new DocumentsS3Update(map, null, dbBuilder, s3Builder, ssmBuilder, sqsBuilder, snsBuilder);
 
     for (String queue : Arrays.asList(sqsDocumentEventUrl)) {
       ReceiveMessageResponse response = sqsService.receiveMessages(queue);
@@ -448,7 +458,7 @@ public class DocumentsS3UpdateTest implements DbKeys {
       final Map<String, Object> map) throws IOException {
 
     // when
-    this.handler.handleRequest(map, this.context);
+    handler.handleRequest(map, this.context);
 
     // then
     return service.findDocument(siteId, documentId);
@@ -460,7 +470,7 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
   public void testHandleRequest01() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
@@ -484,22 +494,17 @@ public class DocumentsS3UpdateTest implements DbKeys {
       final DocumentItem item = handleRequest(siteId, BUCKET_KEY, map);
 
       // then
+      assertFalse(item.getChecksum().startsWith("\""));
+      assertFalse(item.getChecksum().endsWith("\""));
       assertNotNull(item.getS3version());
 
       PaginationResults<DocumentTag> tags =
           service.findDocumentTags(siteId, BUCKET_KEY, null, MAX_RESULTS);
 
-      final int count = 2;
+      final int count = 1;
       assertEquals(count, tags.getResults().size());
 
       int i = 0;
-      assertEquals("path", tags.getResults().get(i).getKey());
-      assertEquals("test.txt", tags.getResults().get(i).getValue());
-      assertEquals(BUCKET_KEY, tags.getResults().get(i).getDocumentId());
-      assertEquals(DocumentTagType.SYSTEMDEFINED, tags.getResults().get(i).getType());
-      assertEquals("joe", tags.getResults().get(i).getUserId());
-      assertNotNull(tags.getResults().get(i++).getInsertedDate());
-
       assertEquals("untagged", tags.getResults().get(i).getKey());
       assertEquals("true", tags.getResults().get(i).getValue());
       assertEquals(BUCKET_KEY, tags.getResults().get(i).getDocumentId());
@@ -522,7 +527,7 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
   public void testHandleRequest02() throws Exception {
 
     Date date = createDate2DaysAgo();
@@ -560,13 +565,11 @@ public class DocumentsS3UpdateTest implements DbKeys {
       PaginationResults<DocumentTag> tags =
           service.findDocumentTags(siteId, BUCKET_KEY, null, MAX_RESULTS);
 
-      final int size = 4;
+      final int size = 3;
       int i = 0;
       assertEquals(size, tags.getResults().size());
       assertEquals("CLAMAV_SCAN_STATUS", tags.getResults().get(i).getKey());
       assertEquals("GOOD", tags.getResults().get(i).getValue());
-      assertEquals(DocumentTagType.SYSTEMDEFINED, tags.getResults().get(i++).getType());
-      assertEquals("path", tags.getResults().get(i).getKey());
       assertEquals(DocumentTagType.SYSTEMDEFINED, tags.getResults().get(i++).getType());
       assertEquals("person", tags.getResults().get(i).getKey());
       assertEquals(DocumentTagType.USERDEFINED, tags.getResults().get(i++).getType());
@@ -584,12 +587,12 @@ public class DocumentsS3UpdateTest implements DbKeys {
   }
 
   /**
-   * Delete Document Request - core.
+   * Delete Document Request - S3 File exists (deleting version document).
    *
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
   public void testHandleRequest03() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
@@ -617,6 +620,42 @@ public class DocumentsS3UpdateTest implements DbKeys {
       DocumentItem item = handleRequest(siteId, BUCKET_KEY, map);
 
       // then
+      assertNotNull(item);
+    }
+  }
+
+  /**
+   * Delete Document Request - S3 File not exists. S3 Main document file was deleted.
+   *
+   * @throws Exception Exception
+   */
+  @Test
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest04() throws Exception {
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      this.logger.reset();
+
+      String key = createDatabaseKey(siteId, BUCKET_KEY);
+      final Map<String, Object> map =
+          loadFileAsMap(this, "/objectremove-event1.json", BUCKET_KEY, key);
+
+      DynamicDocumentItem doc = new DynamicDocumentItem(Map.of());
+      doc.setInsertedDate(new Date());
+      doc.setDocumentId(BUCKET_KEY);
+      doc.setPath("test.txt");
+
+      DynamicDocumentTag tag = new DynamicDocumentTag(Map.of("documentId", BUCKET_KEY, "key",
+          "person", "value", "category", "insertedDate", new Date(), "userId", "asd"));
+      doc.put("tags", Arrays.asList(tag));
+
+      service.saveDocumentItemWithTag(siteId, doc);
+
+      // when
+      DocumentItem item = handleRequest(siteId, BUCKET_KEY, map);
+
+      // then
       assertNull(item);
       assertPublishSnsMessage(siteId, sqsDocumentEventUrl, DELETE, false, true);
     }
@@ -628,8 +667,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest04() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest05() throws Exception {
 
     String documentId = UUID.randomUUID().toString();
 
@@ -672,13 +711,9 @@ public class DocumentsS3UpdateTest implements DbKeys {
         assertNull(m.get(GSI1_PK));
       }
 
-      final int count = 2;
+      final int count = 1;
       int i = 0;
       assertEquals(count, tags.getResults().size());
-      assertDocumentTagEquals(new DocumentTag().setKey("path").setValue("test.txt")
-          .setDocumentId(BUCKET_KEY).setType(DocumentTagType.SYSTEMDEFINED).setUserId("joe"),
-          tags.getResults().get(i++));
-
       assertDocumentTagEquals(new DocumentTag().setKey("untagged").setValue("true")
           .setDocumentId(BUCKET_KEY).setType(DocumentTagType.SYSTEMDEFINED).setUserId("joe"),
           tags.getResults().get(i++));
@@ -701,8 +736,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest05() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest06() throws Exception {
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
       this.logger.reset();
@@ -753,8 +788,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest06() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest07() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -788,8 +823,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest07() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest08() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -824,8 +859,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest08() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest09() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -860,8 +895,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest09() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest10() throws Exception {
     String ttl = "1612061365";
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -910,8 +945,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest10() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest11() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -925,8 +960,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
       doc.setUserId("joe");
       doc.setPath("test.txt");
       service.saveDocumentItemWithTag(siteId, doc);
-      actionsService.saveActions(siteId, doc.getDocumentId(),
-          Arrays.asList(new Action().type(ActionType.OCR).status(ActionStatus.COMPLETE)));
+      actionsService.saveNewActions(siteId, doc.getDocumentId(), Arrays
+          .asList(new Action().type(ActionType.OCR).userId("joe").status(ActionStatus.COMPLETE)));
 
       addS3File(key, "pdf", false, "testdata");
 
@@ -947,11 +982,10 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest11() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest12() throws Exception {
 
     createMockServer(DocumentsS3Update.SERVER_ERROR);
-    this.modules = Arrays.asList("ocr", "fulltext");
     before();
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
@@ -968,10 +1002,15 @@ public class DocumentsS3UpdateTest implements DbKeys {
       service.saveDocumentItemWithTag(siteId, doc);
 
       // when
-      DocumentItem item = handleRequest(siteId, BUCKET_KEY, map);
+      try {
+        handleRequest(siteId, BUCKET_KEY, map);
+      } catch (Exception e) {
+        // then
+        assertTrue(e.getMessage().contains("Unable to delete document"));
 
-      // then
-      assertNotNull(item);
+        DocumentItem item = service.findDocument(siteId, doc.getDocumentId());
+        assertNotNull(item);
+      }
     }
   }
 
@@ -981,11 +1020,10 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest12() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest13() throws Exception {
 
     createMockServer(OK);
-    this.modules = Arrays.asList("ocr", "fulltext");
     before();
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
@@ -1015,8 +1053,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
    * @throws Exception Exception
    */
   @Test
-  @Timeout(unit = TimeUnit.MILLISECONDS, value = TEST_TIMEOUT)
-  public void testHandleRequest13() throws Exception {
+  @Timeout(unit = TimeUnit.SECONDS, value = TEST_TIMEOUT)
+  public void testHandleRequest14() throws Exception {
 
     for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
       // given
@@ -1030,8 +1068,8 @@ public class DocumentsS3UpdateTest implements DbKeys {
       doc.setUserId("joe");
       doc.setPath("test.txt");
       service.saveDocumentItemWithTag(siteId, doc);
-      actionsService.saveActions(siteId, doc.getDocumentId(),
-          Arrays.asList(new Action().type(ActionType.OCR).status(ActionStatus.RUNNING)));
+      actionsService.saveNewActions(siteId, doc.getDocumentId(), Arrays
+          .asList(new Action().type(ActionType.OCR).userId("joe").status(ActionStatus.RUNNING)));
 
       addS3File(key, "pdf", false, "testdata");
 
@@ -1057,9 +1095,6 @@ public class DocumentsS3UpdateTest implements DbKeys {
    */
   private DocumentItem verifyDocumentSaved(final String siteId, final DocumentItem item,
       final String contentType, final String contentLength) {
-
-    assertTrue(this.logger
-        .containsString("updating document " + createDatabaseKey(siteId, item.getDocumentId())));
 
     assertEquals(contentType, item.getContentType());
     assertEquals(contentLength, item.getContentLength().toString());

@@ -75,13 +75,7 @@ Resources:
       VpcId:
         Ref: Vpc
       InternetGatewayId:
-        Ref: InternetGateway 
-        
-  EcsServiceLinkedRole:
-    Type: "AWS::IAM::ServiceLinkedRole"
-    Properties:
-      AWSServiceName: "ecs.amazonaws.com"
-      Description: "Role to enable Amazon ECS to manage your cluster."
+        Ref: InternetGateway
       
   CloudMapNamespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
@@ -141,6 +135,9 @@ Resources:
         Ref: PublicSubnet1Cidr
       MapPublicIpOnLaunch: true
       Tags:
+        - Key: Name
+          Value: 
+            Fn::Sub: "FormKiQ PublicSubnet1 (${PublicSubnet1Cidr})"
         - Key: Application
           Value: FormKiQ
         - Key: StackName
@@ -161,6 +158,9 @@ Resources:
         Ref: PublicSubnet2Cidr
       MapPublicIpOnLaunch: true
       Tags:
+        - Key: Name
+          Value: 
+            Fn::Sub: "FormKiQ PublicSubnet2 (${PublicSubnet2Cidr})"
         - Key: Application
           Value: FormKiQ
         - Key: StackName
@@ -181,6 +181,9 @@ Resources:
         Ref: PublicSubnet3Cidr
       MapPublicIpOnLaunch: true
       Tags:
+        - Key: Name
+          Value: 
+            Fn::Sub: "FormKiQ PublicSubnet3 (${PublicSubnet3Cidr})"
         - Key: Application
           Value: FormKiQ
         - Key: StackName

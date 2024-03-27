@@ -1,96 +1,139 @@
+import org.apache.tools.ant.taskdefs.condition.Os
+
 description = "FormKiQ Core - WebSocket"
+
+apply plugin: 'distribution'
+
+sourceSets {
+    integration {
+        java.srcDir "$projectDir/src/integration/java"
+        resources.srcDir "$projectDir/src/integration/resources"
+        compileClasspath += main.output + test.output
+        runtimeClasspath += main.output + test.output
+    }
+}
+
+configurations {
+    integrationImplementation.extendsFrom testImplementation
+    integrationRuntime.extendsFrom testRuntime
+}
+
+def getCmd() {
+    String os = System.getProperty("os.name").toLowerCase()
+    return os.contains("win") ? "cmd" : "bash"
+}
+
+def getCmdParam() {
+    String os = System.getProperty("os.name").toLowerCase()
+    return os.contains("win") ? "/c" : "-c"
+}
 
 jar.enabled = false
 
 dependencies {
 	testImplementation project(':aws-sqs')
 	testImplementation project(':aws-ssm')
-	testImplementation project(':aws-cognito')
+    testImplementation project(':aws-cognito-identity')
+    testImplementation project(':aws-cognito-identityprovider')
 	testImplementation project(':aws-dynamodb')
 	testImplementation project(':dynamodb-documents')
+	testImplementation project(':fkq-test-utils')
 	
-	testImplementation group: 'software.amazon.awssdk', name: 'dynamodb', version: '2.17.252'
+	testImplementation group: 'software.amazon.awssdk', name: 'dynamodb', version: '2.20.140'
 	
-    testImplementation group: 'junit', name: 'junit', version:'4.+'
-    testImplementation group: 'com.google.code.gson', name: 'gson', version: '2.9.1'
+	testImplementation group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version:'5.10.0'
+    testImplementation group: 'com.google.code.gson', name: 'gson', version: '2.10.1'
 	testImplementation group: 'org.java-websocket', name: 'Java-WebSocket', version: '1.5.3'
-	testImplementation group: 'org.slf4j', name: 'slf4j-simple', version: '2.0.2'
-	testImplementation group: 'com.formkiq.stacks', name: 'client', version:'1.9.0'
+	testImplementation group: 'org.slf4j', name: 'slf4j-simple', version: '2.0.7'
 }
 
 test {
-  failFast = true
-  exclude 'com/formkiq/stacks/websocket/awstest/**' 
+  failFast = true 
+  useJUnitPlatform()
 }
 
-task testaws(type: Test) {
-  description = 'Runs AWS integration tests.'
-  outputs.upToDateWhen {false}
-  include 'com/formkiq/stacks/websocket/awstest/**'    
+task integrationTest(type: Test) {
+    testClassesDirs = sourceSets.integration.output.classesDirs
+    classpath = sourceSets.integration.runtimeClasspath
+    useJUnitPlatform()
 }
 
-task npmInstall(type:Exec) {
-  inputs.files("src/main/resources/js")
-  outputs.files("${buildDir}/resources/main/js/websocket-api.zip")
-  dependsOn processResources, compileTestJava, checkstyleTest, spotbugsTest
-  workingDir "${buildDir}/resources/main/js"
-  commandLine "bash", "-c", "npm install ; npm run pack"
+task npmInstall {
+
+  dependsOn processResources
+  
+  doLast {
+	  
+	  delete("${buildDir}/resources/main/js/websocket-api.zip")
+	  
+	  exec {
+	    workingDir "${buildDir}/resources/main/js"
+		commandLine getCmd(), getCmdParam(), "npm install"
+	  }
+	  
+	  exec {
+	    workingDir "${buildDir}/resources/main/js"
+		commandLine getCmd(), getCmdParam(), "npm run pack"
+	  }
+  }
 }
 
 jar.dependsOn npmInstall
 
 task npmtest {
-  dependsOn npmInstall, jar
-  inputs.files("src/main/resources/js")
+  onlyIf { !Os.isFamily(Os.FAMILY_WINDOWS) }
+  inputs.dir("src/main/resources/js")
   outputs.dir("${buildDir}/resources/main/js/coverage")
   doLast {
     exec {
-      commandLine "bash", "-c", "cd build/resources/main/js ; npm test"
-    }
+	  workingDir "${buildDir}/resources/main/js"
+	  commandLine getCmd(), getCmdParam(), "npm test"
+	}
   }
 }
 
-task assembleTemplate {
-    dependsOn check
-	inputs.files("src/main/resources/cloudformation/template-sar.yaml")
-	outputs.dir("${buildDir}/distributions/formkiq-core")
+npmtest.dependsOn compileIntegrationJava,checkstyleIntegration,spotbugsIntegration
+
+task buildTemplate {
+	inputs.files("src/main/resources/cloudformation/template.yaml")
+	outputs.files("${buildDir}/distributions/websocket-api/template.yaml")
+	
 	doLast {
-		exec {
-			commandLine "bash", "-c", "mkdir -p ${buildDir}/distributions/formkiq-core/sam/websocket-api && mkdir -p ${buildDir}/distributions/formkiq-core/sar/websocket-api"
-		}
-		exec {
-			commandLine "bash", "-c", "cp ${buildDir}/resources/main/js/websocket-api.zip ${buildDir}/distributions/formkiq-core/sam/websocket-api/"
-		}
-		exec {
-			commandLine "bash", "-c", "cp src/main/resources/cloudformation/template-sar.yaml ${buildDir}/distributions/formkiq-core/sam/websocket-api/template.yaml"
-		}
+		copy {
+		  from layout.buildDirectory.dir("${buildDir}/../src/main/resources/cloudformation")
+		  include "template*"
+	      into "${buildDir}/distributions/websocket-api"
+	    }
 	}
 }
 
-task updateLambda {
-	outputs.upToDateWhen { false }
-	dependsOn assembleTemplate
-	doLast {
-		exec {
-			commandLine "bash", "-c", "aws lambda list-functions --region ${testregion} --profile ${testprofile} | jq -r '.Functions[] | .FunctionName' | grep formkiq-core-${testappenvironment} | grep 'Websocket' | xargs -I{} aws lambda update-function-code --function-name {} --zip-file fileb://${buildDir}/websocket-api.zip --region ${testregion} --profile ${testprofile}"
-		}
-	}
+task unzipPack(type: Copy) {
+  dependsOn npmInstall
+  def zipFile = file("${buildDir}/resources/main/js/websocket-api.zip")
+  def outputDir = file("${buildDir}/pack")
+
+  from zipTree(zipFile)
+  into outputDir
 }
 
-ext.macroLocalStackStart = {
-	exec {
-	  commandLine "bash", "-c", "docker-compose  -f ./docker-compose.yml up -d"
-	}
-	exec {
-	  commandLine "bash", "-c", "${project.rootDir}/wait-for-localstack.sh 4568"
-	}
+npmtest.dependsOn npmInstall
+test.dependsOn npmtest
+
+distZip.dependsOn buildTemplate, npmInstall, unzipPack
+
+tasks.distTar.enabled = false
+
+distZip {
+    archiveFileName = "websocket-api/websocket-api.zip"
 }
-  
-ext.macroDockerComposeDown = {
-    exec {
-      commandLine "bash", "-c", "docker-compose  -f ${project.rootDir}/docker-compose.yml down"
+
+distributions {
+    main {
+        contents {
+            from("${buildDir}/pack") {
+            	include "**/**"
+            }
+            into '/'
+        }
     }
 }
-
-test.dependsOn npmtest
-build.dependsOn assembleTemplate

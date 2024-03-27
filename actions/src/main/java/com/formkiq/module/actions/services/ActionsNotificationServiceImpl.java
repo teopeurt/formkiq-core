@@ -24,15 +24,14 @@
 package com.formkiq.module.actions.services;
 
 import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.DEFAULT_SITE_ID;
-import static com.formkiq.module.documentevents.DocumentEventType.ACTIONS;
+import static com.formkiq.module.events.document.DocumentEventType.ACTIONS;
 import static software.amazon.awssdk.utils.StringUtils.isEmpty;
 import java.util.List;
 import java.util.Optional;
-import com.formkiq.aws.sns.SnsConnectionBuilder;
 import com.formkiq.module.actions.Action;
-import com.formkiq.module.documentevents.DocumentEvent;
-import com.formkiq.module.documentevents.DocumentEventService;
-import com.formkiq.module.documentevents.DocumentEventServiceSns;
+import com.formkiq.module.actions.ActionStatus;
+import com.formkiq.module.events.EventService;
+import com.formkiq.module.events.document.DocumentEvent;
 
 /**
  * 
@@ -41,33 +40,47 @@ import com.formkiq.module.documentevents.DocumentEventServiceSns;
  */
 public class ActionsNotificationServiceImpl implements ActionsNotificationService {
 
-  /** Document Event Actions Topic. */
-  private String topicArn;
-  /** {@link DocumentEventService}. */
-  private DocumentEventService documentEventService;
+  /** {@link EventService}. */
+  private EventService documentEventService;
 
   /**
    * constructor.
    * 
-   * @param documentActionsTopicArn {@link String}
-   * @param snsBuilder {@link SnsConnectionBuilder}
+   * @param eventService {@link EventService}
    */
-  public ActionsNotificationServiceImpl(final String documentActionsTopicArn,
-      final SnsConnectionBuilder snsBuilder) {
-    this.topicArn = documentActionsTopicArn;
-    this.documentEventService = new DocumentEventServiceSns(snsBuilder);
+  public ActionsNotificationServiceImpl(final EventService eventService) {
+    if (eventService == null) {
+      throw new IllegalArgumentException("'eventService' is required");
+    }
+    this.documentEventService = eventService;
   }
 
   @Override
-  public void publishNextActionEvent(final List<Action> actions, final String siteId,
+  public boolean publishNextActionEvent(final List<Action> actions, final String siteId,
       final String documentId) {
 
-    Optional<Action> o = actions.stream().filter(new NextActionPredicate()).findFirst();
+    boolean publishedEvent = false;
 
-    if (o.isPresent()) {
-      String site = !isEmpty(siteId) ? siteId : DEFAULT_SITE_ID;
-      DocumentEvent event = new DocumentEvent().siteId(site).documentId(documentId).type(ACTIONS);
-      this.documentEventService.publish(this.topicArn, event);
+    Optional<Action> o =
+        actions.stream().filter(new ActionStatusPredicate(ActionStatus.RUNNING)).findFirst();
+
+    if (o.isEmpty()) {
+
+      o = actions.stream().filter(new ActionStatusPredicate(ActionStatus.PENDING)).findFirst();
+
+      if (o.isPresent()) {
+        publishedEvent = publishNextActionEvent(siteId, documentId);
+      }
     }
+
+    return publishedEvent;
+  }
+
+  @Override
+  public boolean publishNextActionEvent(final String siteId, final String documentId) {
+    String site = !isEmpty(siteId) ? siteId : DEFAULT_SITE_ID;
+    DocumentEvent event = new DocumentEvent().siteId(site).documentId(documentId).type(ACTIONS);
+    this.documentEventService.publish(event);
+    return true;
   }
 }

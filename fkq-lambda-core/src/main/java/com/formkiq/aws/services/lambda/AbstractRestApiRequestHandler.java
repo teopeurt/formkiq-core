@@ -23,6 +23,7 @@
  */
 package com.formkiq.aws.services.lambda;
 
+import static com.formkiq.aws.dynamodb.SiteIdKeyGenerator.DEFAULT_SITE_ID;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_BAD_REQUEST;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_ERROR;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_FORBIDDEN;
@@ -40,9 +41,12 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.DateTimeException;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.amazonaws.services.lambda.runtime.RequestStreamHandler;
@@ -65,18 +69,6 @@ import software.amazon.awssdk.utils.StringUtils;
  *
  */
 public abstract class AbstractRestApiRequestHandler implements RequestStreamHandler {
-
-  /** {@link ApiAuthorizerType}. */
-  private static ApiAuthorizerType authorizerType = ApiAuthorizerType.COGNITO;
-
-  /**
-   * Set AuthorizerType.
-   * 
-   * @param type {@link ApiAuthorizerType}
-   */
-  protected static void setAuthorizerType(final ApiAuthorizerType type) {
-    authorizerType = type;
-  }
 
   /** {@link Gson}. */
   protected Gson gson = GsonUtil.getInstance();
@@ -124,13 +116,13 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
    * @param logger {@link LambdaLogger}
    * @param method {@link String}
    * @param event {@link ApiGatewayRequestEvent}
-   * @param authorizer {@link ApiAuthorizer}
+   * @param authorization ApiAuthorization
    * @param handler {@link ApiGatewayRequestHandler}
    * @return {@link ApiRequestHandlerResponse}
    * @throws Exception Exception
    */
   private ApiRequestHandlerResponse callHandlerMethod(final LambdaLogger logger,
-      final String method, final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final String method, final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final ApiGatewayRequestHandler handler) throws Exception {
 
     ApiRequestHandlerResponse response = null;
@@ -138,43 +130,55 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
 
     switch (method) {
       case "get":
-        handler.beforeGet(logger, event, authorizer, awsServices);
-        response = handler.get(logger, event, authorizer, awsServices);
+        handler.beforeGet(logger, event, authorization, awsServices);
+        response = handler.get(logger, event, authorization, awsServices);
         break;
 
       case "delete":
-        handler.beforeDelete(logger, event, authorizer, awsServices);
-        response = handler.delete(logger, event, authorizer, awsServices);
+        handler.beforeDelete(logger, event, authorization, awsServices);
+        response = handler.delete(logger, event, authorization, awsServices);
         break;
 
       case "head":
-        handler.beforeHead(logger, event, authorizer, awsServices);
-        response = handler.head(logger, event, authorizer, awsServices);
+        handler.beforeHead(logger, event, authorization, awsServices);
+        response = handler.head(logger, event, authorization, awsServices);
         break;
 
       case "options":
-        response = handler.options(logger, event, authorizer, awsServices);
+        response = handler.options(logger, event, authorization, awsServices);
         break;
 
       case "patch":
-        handler.beforePatch(logger, event, authorizer, awsServices);
-        response = handler.patch(logger, event, authorizer, awsServices);
+        handler.beforePatch(logger, event, authorization, awsServices);
+        response = handler.patch(logger, event, authorization, awsServices);
         break;
 
       case "post":
-        handler.beforePost(logger, event, authorizer, awsServices);
-        response = handler.post(logger, event, authorizer, awsServices);
+        handler.beforePost(logger, event, authorization, awsServices);
+        response = handler.post(logger, event, authorization, awsServices);
         break;
 
       case "put":
-        handler.beforePut(logger, event, authorizer, awsServices);
-        response = handler.put(logger, event, authorizer, awsServices);
+        handler.beforePut(logger, event, authorization, awsServices);
+        response = handler.put(logger, event, authorization, awsServices);
         break;
       default:
         break;
     }
 
     return response;
+  }
+
+  /**
+   * Check For {@link ApiPermission}.
+   * 
+   * @param permission {@link ApiPermission}
+   * @param permissions {@link Collection} {@link ApiPermission}
+   * @return {@link Optional} {@link Boolean}
+   */
+  private Optional<Boolean> checkPermission(final ApiPermission permission,
+      final Collection<ApiPermission> permissions) {
+    return permissions.contains(permission) ? Optional.of(Boolean.TRUE) : Optional.empty();
   }
 
   /**
@@ -189,6 +193,46 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
     headers.put("Access-Control-Allow-Origin", "*");
     headers.put("Content-Type", "application/json");
     return headers;
+  }
+
+  /**
+   * Execute Before Request Interceptor.
+   * 
+   * @param interceptor {@link ApiRequestHandlerInterceptor}
+   * @param event {@link ApiGatewayRequestEvent}
+   * @param awsServices {@link AwsServiceCache}
+   * @param authorization {@link ApiAuthorization}
+   * @throws Exception Exception
+   */
+  private void executeRequestInterceptor(final ApiRequestHandlerInterceptor interceptor,
+      final ApiGatewayRequestEvent event, final AwsServiceCache awsServices,
+      final ApiAuthorization authorization) throws Exception {
+
+    if (interceptor != null) {
+      interceptor.awsServiceCache(awsServices);
+      interceptor.beforeProcessRequest(event, authorization);
+    }
+  }
+
+  /**
+   * Execute {@link ApiRequestHandlerResponseInterceptor}.
+   * 
+   * @param interceptor {@link ApiRequestHandlerInterceptor}
+   * @param event {@link ApiGatewayRequestEvent}
+   * @param awsServices {@link AwsServiceCache}
+   * @param authorization {@link ApiAuthorization}
+   * @param object {@link ApiRequestHandlerResponse}
+   * @throws Exception Exception
+   */
+  private void executeResponseInterceptor(final ApiRequestHandlerInterceptor interceptor,
+      final ApiGatewayRequestEvent event, final AwsServiceCache awsServices,
+      final ApiAuthorization authorization, final ApiRequestHandlerResponse object)
+      throws Exception {
+
+    if (interceptor != null) {
+      interceptor.awsServiceCache(awsServices);
+      interceptor.afterProcessRequest(event, authorization, object);
+    }
   }
 
   /**
@@ -232,6 +276,11 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
     return event;
   }
 
+  private ApiRequestHandlerInterceptor getApiRequestHandlerInterceptor(
+      final AwsServiceCache awsServices) {
+    return awsServices.getExtensionOrNull(ApiRequestHandlerInterceptor.class);
+  }
+
   /**
    * Get {@link AwsServiceCache}.
    *
@@ -271,6 +320,16 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
    */
   public abstract Map<String, ApiGatewayRequestHandler> getUrlMap();
 
+  /**
+   * Final Request Handler.
+   * 
+   * @param requestContext {@link Context}
+   * @param input {@link String}
+   */
+  public void handleOtherRequest(final Context requestContext, final String input) {
+    // empty
+  }
+
   @Override
   public void handleRequest(final InputStream input, final OutputStream output,
       final Context context) throws IOException {
@@ -282,14 +341,24 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
     String str = IoUtils.toUtf8String(input);
 
     ApiGatewayRequestEvent event = getApiGatewayEvent(str, logger, awsServices);
+
     if (!isEmpty(event)) {
+
       processApiGatewayRequest(logger, event, awsServices, output);
+
     } else {
-      LambdaInputRecords records = this.gson.fromJson(str, LambdaInputRecords.class);
-      for (LambdaInputRecord record : records.getRecords()) {
-        if ("aws:sqs".equals(record.getEventSource())) {
-          handleSqsRequest(logger, awsServices, record);
+
+      if (str.contains("aws:sqs")) {
+        LambdaInputRecords records = this.gson.fromJson(str, LambdaInputRecords.class);
+        for (LambdaInputRecord record : records.getRecords()) {
+          if ("aws:sqs".equals(record.getEventSource())) {
+            handleSqsRequest(logger, awsServices, record);
+          }
         }
+
+      } else {
+
+        handleOtherRequest(context, str);
       }
     }
   }
@@ -306,6 +375,91 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
       LambdaInputRecord record) throws IOException;
 
   /**
+   * Whether {@link ApiGatewayRequestEvent} has access.
+   * 
+   * @param event {@link ApiGatewayRequestEvent}
+   * @param method {@link String}
+   * @param authorization {@link ApiAuthorization}
+   * @param handler {@link ApiGatewayRequestHandler}
+   * @return boolean
+   * @throws Exception Exception
+   */
+  private boolean isAuthorized(final ApiGatewayRequestEvent event, final String method,
+      final ApiAuthorization authorization, final ApiGatewayRequestHandler handler)
+      throws Exception {
+
+    Collection<ApiPermission> permissions = authorization.permissions();
+
+    Optional<Boolean> hasAccess =
+        handler.isAuthorized(getAwsServices(), method, event, authorization);
+
+    hasAccess = isAuthorizedHandler(event, authorization, hasAccess);
+
+    hasAccess = isHandlerSiteIdRequired(authorization, handler, hasAccess);
+
+    if (hasAccess.isEmpty()) {
+      switch (method) {
+        case "head":
+        case "get":
+          hasAccess = checkPermission(ApiPermission.READ, permissions);
+          break;
+
+        case "post":
+        case "patch":
+        case "put":
+          hasAccess = checkPermission(ApiPermission.WRITE, permissions);
+          break;
+
+        case "delete":
+          hasAccess = checkPermission(ApiPermission.DELETE, permissions);
+          break;
+        default:
+          hasAccess = Optional.empty();
+          break;
+      }
+    }
+
+    hasAccess = permissions.contains(ApiPermission.ADMIN) ? Optional.of(Boolean.TRUE) : hasAccess;
+
+    return hasAccess.orElse(Boolean.FALSE).booleanValue();
+  }
+
+  /**
+   * Is caller Authorized to continue.
+   * 
+   * @param awsServiceCache {@link AwsServiceCache}
+   * @param event {@link ApiGatewayRequestEvent}
+   * @param authorization {@link ApiAuthorization}
+   * @param method {@link String}
+   * @param handler {@link ApiGatewayRequestHandler}
+   * @return boolean
+   * @throws Exception Exception
+   */
+  private boolean isAuthorized(final AwsServiceCache awsServiceCache,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization, final String method,
+      final ApiGatewayRequestHandler handler) throws Exception {
+    return "options".equals(method) || isAuthorized(event, method, authorization, handler);
+  }
+
+  private Optional<Boolean> isAuthorizedHandler(final ApiGatewayRequestEvent event,
+      final ApiAuthorization authorization, final Optional<Boolean> hasAccess) {
+
+    AuthorizationHandler authorizationHandler =
+        getAwsServices().getExtensionOrNull(AuthorizationHandler.class);
+
+    Optional<Boolean> isAuthorized = hasAccess;
+
+    if (authorizationHandler != null) {
+      Optional<Boolean> ah =
+          authorizationHandler.isAuthorized(getAwsServices(), event, authorization);
+      if (!ah.isEmpty()) {
+        isAuthorized = ah;
+      }
+    }
+    return isAuthorized;
+  }
+
+  /**
    * Is {@link ApiGatewayRequestEvent} empty.
    * 
    * @param event {@link ApiGatewayRequestEvent}
@@ -313,6 +467,49 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
    */
   private boolean isEmpty(final ApiGatewayRequestEvent event) {
     return event != null && event.getHeaders() == null && event.getPath() == null;
+  }
+
+  /**
+   * Does {@link ApiGatewayRequestHandler} requires a SiteId parameter.
+   * 
+   * @param authorization {@link ApiAuthorization}
+   * @param handler {@link ApiGatewayRequestHandler}
+   * @param hasAccess {@link Boolean}
+   * @return {@link Optional}
+   */
+  private Optional<Boolean> isHandlerSiteIdRequired(final ApiAuthorization authorization,
+      final ApiGatewayRequestHandler handler, final Optional<Boolean> hasAccess) {
+    Optional<Boolean> result = hasAccess;
+    if (hasAccess.isEmpty() && authorization.siteIds().size() > 1 && !handler.isSiteIdRequired()) {
+      result = Optional.of(Boolean.TRUE);
+    }
+    return result;
+  }
+
+  private void log(final LambdaLogger logger, final ApiGatewayRequestEvent event,
+      final ApiAuthorization authorization) {
+
+    if (event != null) {
+      ApiGatewayRequestContext requestContext =
+          event.getRequestContext() != null ? event.getRequestContext()
+              : new ApiGatewayRequestContext();
+
+      Map<String, Object> identity =
+          requestContext.getIdentity() != null ? requestContext.getIdentity() : Map.of();
+
+      String s = String.format(
+          "{\"requestId\": \"%s\",\"ip\": \"%s\",\"requestTime\": \"%s\",\"httpMethod\": \"%s\","
+              + "\"routeKey\": \"%s\",\"pathParameters\": %s,"
+              + "\"protocol\": \"%s\",\"user\":\"%s\",\"queryParameters\":%s}",
+          requestContext.getRequestId(), identity.get("sourceIp"), requestContext.getRequestTime(),
+          event.getHttpMethod(), event.getHttpMethod() + " " + event.getResource(),
+          "{" + toStringFromMap(event.getPathParameters()) + "}", requestContext.getProtocol(),
+          authorization.username(), "{" + toStringFromMap(event.getQueryStringParameters()) + "}");
+
+      logger.log(s);
+    } else {
+      logger.log("{\"requestId\": \"invalid\"");
+    }
   }
 
   /**
@@ -342,12 +539,25 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
       final ApiGatewayRequestEvent event, final AwsServiceCache awsServices,
       final OutputStream output) throws IOException {
 
-    ApiAuthorizer authorizer = new ApiAuthorizer(event, authorizerType);
-
     try {
 
-      ApiRequestHandlerResponse object = processRequest(logger, getUrlMap(), event, authorizer);
-      processResponse(authorizer, event, object);
+      ApiAuthorizationInterceptor interceptor = setupApiAuthorizationInterceptor(awsServices);
+
+      ApiAuthorization authorization =
+          new ApiAuthorizationBuilder().interceptors(interceptor).build(event);
+      log(logger, event, authorization);
+
+      ApiRequestHandlerInterceptor requestInterceptor =
+          getApiRequestHandlerInterceptor(awsServices);
+
+      executeRequestInterceptor(requestInterceptor, event, awsServices, authorization);
+
+      ApiRequestHandlerResponse object = processRequest(logger, getUrlMap(), event, authorization);
+
+      executeResponseInterceptor(requestInterceptor, event, awsServices, authorization, object);
+
+      sendWebNotify(authorization, event, object);
+
       buildResponse(logger, awsServices, output, object.getStatus(), object.getHeaders(),
           object.getResponse());
 
@@ -386,14 +596,14 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
    * @param logger {@link LambdaLogger}
    * @param urlMap {@link Map}
    * @param event {@link ApiGatewayRequestEvent}
-   * @param authorizer {@link ApiAuthorizer}
+   * @param authorization {@link ApiAuthorization}
    * 
    * @return {@link ApiRequestHandlerResponse}
    * @throws Exception Exception
    */
   private ApiRequestHandlerResponse processRequest(final LambdaLogger logger,
       final Map<String, ApiGatewayRequestHandler> urlMap, final ApiGatewayRequestEvent event,
-      final ApiAuthorizer authorizer) throws Exception {
+      final ApiAuthorization authorization) throws Exception {
 
     if (event == null || event.getHttpMethod() == null) {
       throw new NotFoundException("Invalid Request");
@@ -403,58 +613,79 @@ public abstract class AbstractRestApiRequestHandler implements RequestStreamHand
     String resource = event.getResource();
     ApiGatewayRequestHandler handler = findRequestHandler(urlMap, method, resource);
 
-    if (!handler.isAuthorized(getAwsServices(), event, authorizer, method)) {
-      String s = String.format("fkq access denied (%s)", authorizer.accessSummary());
+    if (!isAuthorized(getAwsServices(), event, authorization, method, handler)) {
+      String s = String.format("fkq access denied (%s)", authorization.accessSummary());
+      if (authorization.siteId() == null && authorization.siteIds().size() > 1) {
+        s = String.format("'siteId' parameter required - multiple siteIds found (%s)",
+            authorization.accessSummary());
+      }
+
       throw new ForbiddenException(s);
     }
 
-    return callHandlerMethod(logger, method, event, authorizer, handler);
+    return callHandlerMethod(logger, method, event, authorization, handler);
   }
 
   /**
    * Processes the Response.
    * 
-   * @param authorizer {@link ApiAuthorizer}
+   * @param authorization {@link ApiAuthorization}
    * @param event {@link ApiGatewayRequestEvent}
    * @param resp {@link ApiRequestHandlerResponse}
    * @throws BadException BadException
    */
-  private void processResponse(final ApiAuthorizer authorizer, final ApiGatewayRequestEvent event,
-      final ApiRequestHandlerResponse resp) throws BadException {
+  private void sendWebNotify(final ApiAuthorization authorization,
+      final ApiGatewayRequestEvent event, final ApiRequestHandlerResponse resp)
+      throws BadException {
 
-    String webnotify = event.getQueryStringParameter("webnotify");
+    String websocket = event.getQueryStringParameter("ws");
 
-    if ("true".equals(webnotify)) {
+    if ("true".equals(websocket)) {
 
       AwsServiceCache aws = getAwsServices();
       switch (resp.getStatus()) {
         case SC_OK:
         case SC_CREATED:
         case SC_ACCEPTED:
-          String siteId = authorizer.getSiteId();
+          String siteId = authorization.siteId();
           String body = getBodyAsString(event);
           String documentId = event.getPathParameters().get("documentId");
 
-          Map<String, String> m = new HashMap<>();
-          if (siteId != null) {
-            m.put("siteId", siteId);
-          }
-
           if (documentId != null) {
+
+            Map<String, String> m = new HashMap<>();
+            m.put("siteId", siteId != null ? siteId : DEFAULT_SITE_ID);
             m.put("documentId", documentId);
+            m.put("message", body);
+
+            String json = this.gson.toJson(m);
+            SqsService sqsService = aws.getExtension(SqsService.class);
+            sqsService.sendMessage(aws.environment("WEBSOCKET_SQS_URL"), json);
           }
-
-          m.put("message", body);
-
-          String json = this.gson.toJson(m);
-          SqsService sqsService = aws.getExtension(SqsService.class);
-          sqsService.sendMessage(aws.environment("WEBSOCKET_SQS_URL"), json);
           break;
 
         default:
           break;
       }
     }
+  }
+
+  private ApiAuthorizationInterceptor setupApiAuthorizationInterceptor(
+      final AwsServiceCache awsServices) {
+    ApiAuthorizationInterceptor interceptor =
+        awsServices.getExtensionOrNull(ApiAuthorizationInterceptor.class);
+
+    if (interceptor != null) {
+      interceptor.awsServiceCache(awsServices);
+    }
+    return interceptor;
+  }
+
+  private String toStringFromMap(final Map<String, String> map) {
+    return map != null
+        ? map.entrySet().stream().map(e -> String.format("\"%s\":\"%s\"", e.getKey(), e.getValue()))
+            .collect(Collectors.joining(","))
+        : "";
   }
 
   /**

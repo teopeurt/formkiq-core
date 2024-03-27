@@ -24,10 +24,11 @@
 package com.formkiq.aws.sqs;
 
 import java.net.URI;
-import java.net.URISyntaxException;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration.Builder;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
@@ -47,12 +48,21 @@ public class SqsConnectionBuilder {
 
   /**
    * constructor.
+   * 
+   * @param enableAwsXray Enable Aws X-Ray
    */
-  public SqsConnectionBuilder() {
+  public SqsConnectionBuilder(final boolean enableAwsXray) {
     System.setProperty("software.amazon.awssdk.http.service.impl",
         "software.amazon.awssdk.http.urlconnection.UrlConnectionSdkHttpService");
 
-    this.builder = SqsClient.builder().httpClientBuilder(UrlConnectionHttpClient.builder())
+    Builder clientConfig = ClientOverrideConfiguration.builder();
+
+    // if (enableAwsXray) {
+    // clientConfig.addExecutionInterceptor(new TracingInterceptor());
+    // }
+
+    this.builder = SqsClient.builder().overrideConfiguration(clientConfig.build())
+        .httpClientBuilder(UrlConnectionHttpClient.builder())
         .credentialsProvider(EnvironmentVariableCredentialsProvider.create());
   }
 
@@ -96,12 +106,11 @@ public class SqsConnectionBuilder {
   /**
    * Set Endpoint Override.
    * 
-   * @param uri {@link String}
+   * @param uri {@link URI}
    * @return {@link SqsConnectionBuilder}
-   * @throws URISyntaxException URISyntaxException
    */
-  public SqsConnectionBuilder setEndpointOverride(final String uri) throws URISyntaxException {
-    this.builder = this.builder.endpointOverride(new URI(uri));
+  public SqsConnectionBuilder setEndpointOverride(final URI uri) {
+    this.builder = this.builder.endpointOverride(uri);
     return this;
   }
 

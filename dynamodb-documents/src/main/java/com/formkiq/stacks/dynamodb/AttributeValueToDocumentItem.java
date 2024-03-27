@@ -95,6 +95,7 @@ public class AttributeValueToDocumentItem
     item.setLastModifiedDate(lastModifiedDate != null ? lastModifiedDate : insertedDate);
 
     item.setPath(getString(map.get("path")));
+    item.setDeepLinkPath(getDeepLinkPath(map));
 
     if (map.containsKey("contentType")) {
       item.setContentType(map.get("contentType").s());
@@ -118,7 +119,7 @@ public class AttributeValueToDocumentItem
     }
 
     item.setVersion(getString(map.get("version")));
-    item.setS3version(getString(map.get("s3version")));
+    item.setS3version(getString(map.get(DocumentVersionService.S3VERSION_ATTRIBUTE)));
 
     if (map.containsKey("tagSchemaId")) {
       item.setTagSchemaId(map.get("tagSchemaId").s());
@@ -132,6 +133,14 @@ public class AttributeValueToDocumentItem
     item.setMetadata(metadata);
 
     return item;
+  }
+
+  private String getDeepLinkPath(final Map<String, AttributeValue> map) {
+    return map.containsKey("deepLinkPath") ? getString(map.get("deepLinkPath")) : null;
+  }
+
+  private String getString(final AttributeValue value) {
+    return value != null ? value.s() : null;
   }
 
   /**
@@ -166,9 +175,5 @@ public class AttributeValueToDocumentItem
     }
 
     return c;
-  }
-
-  private String getString(final AttributeValue value) {
-    return value != null ? value.s() : null;
   }
 }

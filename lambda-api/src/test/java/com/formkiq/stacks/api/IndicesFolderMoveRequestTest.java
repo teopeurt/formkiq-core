@@ -23,7 +23,7 @@
  */
 package com.formkiq.stacks.api;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Map;
@@ -171,7 +171,7 @@ public class IndicesFolderMoveRequestTest extends AbstractRequestHandler {
       assertEquals(mapsize, m.size());
       assertEquals("400.0", String.valueOf(m.get("statusCode")));
       assertEquals(getHeaders(), "\"headers\":" + GsonUtil.getInstance().toJson(m.get("headers")));
-      assertEquals("{\"message\":\"index for '" + path + "' does not exist\"}", m.get("body"));
+      assertEquals("{\"message\":\"folder '" + path + "' does not exist\"}", m.get("body"));
     }
   }
 

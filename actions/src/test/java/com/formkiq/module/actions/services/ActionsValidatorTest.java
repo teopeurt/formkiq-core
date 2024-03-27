@@ -28,7 +28,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
+import com.formkiq.aws.dynamodb.DynamicObject;
 import com.formkiq.module.actions.Action;
 import com.formkiq.module.actions.ActionType;
 import com.formkiq.validation.ValidationError;
@@ -42,9 +44,10 @@ class ActionsValidatorTest {
   void testValidation01() {
     // given
     Action action = null;
+    DynamicObject obj = new DynamicObject(Map.of());
 
     // when
-    Collection<ValidationError> errors = this.validator.validation(action);
+    Collection<ValidationError> errors = this.validator.validation(action, obj);
 
     // then
     assertEquals(1, errors.size());
@@ -57,40 +60,43 @@ class ActionsValidatorTest {
   void testValidation02() {
     // given
     Action action = new Action();
+    DynamicObject obj = new DynamicObject(Map.of());
 
     // when
-    Collection<ValidationError> errors = this.validator.validation(action);
+    Collection<ValidationError> errors = this.validator.validation(action, obj);
 
     // then
     assertEquals(1, errors.size());
     ValidationError error = errors.iterator().next();
     assertEquals("type", error.key());
-    assertEquals("'type' is required", error.error());
+    assertEquals("action 'type' is required", error.error());
   }
 
   @Test
   void testValidation03() {
     // given
-    Action action = new Action().type(ActionType.WEBHOOK);
+    Action action = new Action().type(ActionType.WEBHOOK).userId("joe");
+    DynamicObject obj = new DynamicObject(Map.of());
 
     // when
-    Collection<ValidationError> errors = this.validator.validation(action);
+    Collection<ValidationError> errors = this.validator.validation(action, obj);
 
     // then
     assertEquals(1, errors.size());
     ValidationError error = errors.iterator().next();
     assertEquals("parameters.url", error.key());
-    assertEquals("'url' parameter is required", error.error());
+    assertEquals("action 'url' parameter is required", error.error());
   }
 
   @Test
   void testValidation04() {
     // given
     Action action = new Action();
+    DynamicObject obj = new DynamicObject(Map.of());
     List<Action> actions = Arrays.asList(action);
 
     // when
-    List<Collection<ValidationError>> errorList = this.validator.validation(actions);
+    List<Collection<ValidationError>> errorList = this.validator.validation(actions, obj);
 
     // then
     assertEquals(1, errorList.size());
@@ -98,16 +104,47 @@ class ActionsValidatorTest {
     Collection<ValidationError> errors = errorList.get(0);
     ValidationError error = errors.iterator().next();
     assertEquals("type", error.key());
-    assertEquals("'type' is required", error.error());
+    assertEquals("action 'type' is required", error.error());
   }
 
   @Test
   void testValidation05() {
     // given
-    Action action = new Action().type(ActionType.OCR);
+    Action action = new Action().type(ActionType.OCR).userId("joe");
+    DynamicObject obj = new DynamicObject(Map.of());
 
     // when
-    Collection<ValidationError> errorList = this.validator.validation(action);
+    Collection<ValidationError> errorList = this.validator.validation(action, obj);
+
+    // then
+    assertEquals(0, errorList.size());
+  }
+
+  @Test
+  void testValidation06() {
+    // given
+    Action action = new Action().type(ActionType.QUEUE).userId("joe");
+    DynamicObject obj = new DynamicObject(Map.of());
+
+    // when
+    Collection<ValidationError> errors = this.validator.validation(action, obj);
+
+    // then
+    assertEquals(1, errors.size());
+
+    ValidationError error = errors.iterator().next();
+    assertEquals("queueId", error.key());
+    assertEquals("'queueId' is required", error.error());
+  }
+
+  @Test
+  void testValidation07() {
+    // given
+    Action action = new Action().type(ActionType.QUEUE).queueId("Testqueue").userId("joe");
+    DynamicObject obj = new DynamicObject(Map.of());
+
+    // when
+    Collection<ValidationError> errorList = this.validator.validation(action, obj);
 
     // then
     assertEquals(0, errorList.size());

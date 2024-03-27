@@ -23,12 +23,9 @@
  */
 package com.formkiq.stacks.api.handler;
 
-import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_BAD_REQUEST;
+import static com.formkiq.aws.dynamodb.objects.Objects.throwIfNull;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_CREATED;
-import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_ERROR;
 import static com.formkiq.aws.services.lambda.ApiResponseStatus.SC_OK;
-import java.io.IOException;
-import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -42,7 +39,7 @@ import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentTag;
 import com.formkiq.aws.dynamodb.model.DocumentTagType;
-import com.formkiq.aws.services.lambda.ApiAuthorizer;
+import com.formkiq.aws.services.lambda.ApiAuthorization;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEvent;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestEventUtil;
 import com.formkiq.aws.services.lambda.ApiGatewayRequestHandler;
@@ -51,16 +48,12 @@ import com.formkiq.aws.services.lambda.ApiPagination;
 import com.formkiq.aws.services.lambda.ApiRequestHandlerResponse;
 import com.formkiq.aws.services.lambda.ApiResponse;
 import com.formkiq.aws.services.lambda.exceptions.BadException;
-import com.formkiq.aws.services.lambda.exceptions.NotFoundException;
+import com.formkiq.aws.services.lambda.exceptions.DocumentNotFoundException;
 import com.formkiq.aws.services.lambda.services.CacheService;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
 import com.formkiq.plugins.tagschema.DocumentTagSchemaPlugin;
 import com.formkiq.stacks.api.ApiDocumentTagItemResponse;
 import com.formkiq.stacks.api.ApiDocumentTagsItemResponse;
-import com.formkiq.stacks.client.FormKiqClientV1;
-import com.formkiq.stacks.client.models.UpdateFulltext;
-import com.formkiq.stacks.client.models.UpdateFulltextTag;
-import com.formkiq.stacks.client.requests.UpdateDocumentFulltextRequest;
 import com.formkiq.stacks.dynamodb.DocumentService;
 import com.formkiq.stacks.dynamodb.DocumentTagValidatorImpl;
 import com.formkiq.stacks.dynamodb.DocumentTags;
@@ -79,7 +72,7 @@ public class DocumentTagsRequestHandler
 
   @Override
   public ApiRequestHandlerResponse get(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
     DocumentService documentService = awsservice.getExtension(DocumentService.class);
@@ -90,8 +83,9 @@ public class DocumentTagsRequestHandler
 
     PaginationMapToken ptoken = pagination != null ? pagination.getStartkey() : null;
 
-    String siteId = authorizer.getSiteId();
+    String siteId = authorization.siteId();
     String documentId = event.getPathParameters().get("documentId");
+    verifyDocument(awsservice, event, siteId, documentId);
 
     PaginationResults<DocumentTag> results =
         documentService.findDocumentTags(siteId, documentId, ptoken, limit);
@@ -155,21 +149,44 @@ public class DocumentTagsRequestHandler
   }
 
   @Override
-  public ApiRequestHandlerResponse post(final LambdaLogger logger,
-      final ApiGatewayRequestEvent event, final ApiAuthorizer authorizer,
+  public ApiRequestHandlerResponse patch(final LambdaLogger logger,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
       final AwsServiceCache awsservice) throws Exception {
 
-    final String siteId = authorizer.getSiteId();
+    final String siteId = authorization.siteId();
     final String documentId = event.getPathParameters().get("documentId");
 
-    DocumentTag tag = fromBodyToObject(logger, event, DocumentTag.class);
-    DocumentTags tags = fromBodyToObject(logger, event, DocumentTags.class);
+    DocumentTags tags = fromBodyToObject(event, DocumentTags.class);
+
+    validate(tags);
+    verifyDocument(awsservice, event, siteId, documentId);
+
+    updateTagsMetadata(event, authorization, tags);
+
+    validateTags(tags);
+
+    DocumentService documentService = awsservice.getExtension(DocumentService.class);
+    documentService.addTags(siteId, documentId, tags.getTags(), null);
+
+    return new ApiRequestHandlerResponse(SC_OK, new ApiMessageResponse("Updated Tags"));
+  }
+
+  @Override
+  public ApiRequestHandlerResponse post(final LambdaLogger logger,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
+      final AwsServiceCache awsservice) throws Exception {
+
+    final String siteId = authorization.siteId();
+    final String documentId = event.getPathParameters().get("documentId");
+
+    DocumentTag tag = fromBodyToObject(event, DocumentTag.class);
+    DocumentTags tags = fromBodyToObject(event, DocumentTags.class);
 
     boolean tagValid = isValid(tag);
     boolean tagsValid = isValid(tags);
 
     if (!tagValid && !tagsValid) {
-      throw new BadException("invalid json body");
+      throw new BadException("invalid JSON body");
     }
 
     if (tagsValid) {
@@ -180,31 +197,17 @@ public class DocumentTagsRequestHandler
       }
     }
 
-    DocumentService documentService = awsservice.getExtension(DocumentService.class);
-
-    DocumentItem item = documentService.findDocument(siteId, documentId);
-    if (item == null) {
-      throw new NotFoundException("Document " + documentId + " not found.");
-    }
-
     if (!tagsValid) {
       tags = new DocumentTags();
       tags.setTags(Arrays.asList(tag));
     }
 
-    String userId = getCallingCognitoUsername(event);
+    String userId = updateTagsMetadata(event, authorization, tags);
 
-    tags.getTags().forEach(t -> {
-      t.setType(DocumentTagType.USERDEFINED);
-      t.setInsertedDate(new Date());
-      t.setUserId(userId);
-    });
+    validateTags(tags);
 
-    Collection<ValidationError> tagErrors = new DocumentTagValidatorImpl().validate(tags);
-    if (!tagErrors.isEmpty()) {
-      throw new ValidationException(tagErrors);
-    }
-
+    DocumentService documentService = awsservice.getExtension(DocumentService.class);
+    DocumentItem item = verifyDocument(awsservice, event, siteId, documentId);
     documentService.deleteDocumentTag(siteId, documentId, "untagged");
 
     Collection<DocumentTag> newTags = tagSchemaValidation(awsservice, siteId, tags, item, userId);
@@ -212,14 +215,37 @@ public class DocumentTagsRequestHandler
     List<DocumentTag> allTags = new ArrayList<>(tags.getTags());
     allTags.addAll(newTags);
 
-    updateFulltextIfInstalled(logger, awsservice, siteId, documentId, allTags);
-
     documentService.addTags(siteId, documentId, allTags, null);
 
     ApiResponse resp = tagsValid ? new ApiMessageResponse("Created Tags.")
         : new ApiMessageResponse("Created Tag '" + tag.getKey() + "'.");
 
     return new ApiRequestHandlerResponse(SC_CREATED, resp);
+  }
+
+  @Override
+  public ApiRequestHandlerResponse put(final LambdaLogger logger,
+      final ApiGatewayRequestEvent event, final ApiAuthorization authorization,
+      final AwsServiceCache awsservice) throws Exception {
+
+    final String siteId = authorization.siteId();
+    final String documentId = event.getPathParameters().get("documentId");
+
+    DocumentTags tags = fromBodyToObject(event, DocumentTags.class);
+
+    validate(tags);
+
+    verifyDocument(awsservice, event, siteId, documentId);
+
+    DocumentService documentService = awsservice.getExtension(DocumentService.class);
+    documentService.deleteDocumentTags(siteId, documentId);
+    updateTagsMetadata(event, authorization, tags);
+
+    validateTags(tags);
+
+    documentService.addTags(siteId, documentId, tags.getTags(), null);
+
+    return new ApiRequestHandlerResponse(SC_OK, new ApiMessageResponse("Set Tags"));
   }
 
   /**
@@ -251,43 +277,59 @@ public class DocumentTagsRequestHandler
   }
 
   /**
-   * Update Fulltext index if Module available.
+   * Update {@link DocumentTags} metadata.
    * 
-   * @param logger {@link LambdaLogger}
-   * @param awsservice {@link AwsServiceCache}
-   * @param siteId {@link String}
-   * @param documentId {@link String}
-   * @param tags {@link List} {@link DocumentTag}
-   * @throws IOException IOException
-   * @throws InterruptedException InterruptedException
+   * @param event {@link ApiGatewayRequestEvent}
+   * @param authorization {@link ApiAuthorization}
+   * @param tags {@link DocumentTags}
+   * @return {@link String}
    */
-  private void updateFulltextIfInstalled(final LambdaLogger logger,
-      final AwsServiceCache awsservice, final String siteId, final String documentId,
-      final List<DocumentTag> tags) throws IOException, InterruptedException {
+  private String updateTagsMetadata(final ApiGatewayRequestEvent event,
+      final ApiAuthorization authorization, final DocumentTags tags) {
 
-    if (awsservice.hasModule("fulltext")) {
-      FormKiqClientV1 client = awsservice.getExtension(FormKiqClientV1.class);
+    String userId = authorization.username();
 
-      List<UpdateFulltextTag> updateTags =
-          tags.stream().filter(t -> DocumentTagType.USERDEFINED.equals(t.getType()))
-              .map(t -> new UpdateFulltextTag().key(t.getKey()).value(t.getValue())
-                  .values(t.getValues()))
-              .collect(Collectors.toList());
+    tags.getTags().forEach(t -> {
+      t.setType(DocumentTagType.USERDEFINED);
+      t.setInsertedDate(new Date());
+      t.setUserId(userId);
+    });
+    return userId;
+  }
 
-      if (!updateTags.isEmpty()) {
-        HttpResponse<String> response = client
-            .updateDocumentFulltextAsHttpResponse(new UpdateDocumentFulltextRequest().siteId(siteId)
-                .documentId(documentId).document(new UpdateFulltext().tags(updateTags)));
+  /**
+   * Validate {@link DocumentTags}.
+   * 
+   * @param tags {@link DocumentTags}
+   * @throws BadException BadException
+   */
+  private void validate(final DocumentTags tags) throws BadException {
+    boolean tagsValid = isValid(tags);
 
-        if (response.statusCode() == SC_BAD_REQUEST.getStatusCode()
-            || response.statusCode() == SC_ERROR.getStatusCode()) {
-
-          logger.log("unable to update Fulltext");
-          logger.log("status: " + response.statusCode());
-          logger.log("body: " + response.body());
-          throw new IOException("unable to update Fulltext");
-        }
-      }
+    if (!tagsValid) {
+      throw new BadException("invalid JSON body");
     }
+  }
+
+  /**
+   * Validate {@link DocumentTags}.
+   * 
+   * @param tags {@link DocumentTags}
+   * @throws ValidationException ValidationException
+   */
+  private void validateTags(final DocumentTags tags) throws ValidationException {
+    Collection<ValidationError> tagErrors = new DocumentTagValidatorImpl().validate(tags);
+    if (!tagErrors.isEmpty()) {
+      throw new ValidationException(tagErrors);
+    }
+  }
+
+  private DocumentItem verifyDocument(final AwsServiceCache awsservice,
+      final ApiGatewayRequestEvent event, final String siteId, final String documentId)
+      throws Exception {
+    DocumentService ds = awsservice.getExtension(DocumentService.class);
+    DocumentItem item = ds.findDocument(siteId, documentId);
+    throwIfNull(item, new DocumentNotFoundException(documentId));
+    return item;
   }
 }

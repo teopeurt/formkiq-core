@@ -24,17 +24,14 @@
 package com.formkiq.aws.s3;
 
 import java.net.URI;
-import java.net.URISyntaxException;
-import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
-import software.amazon.awssdk.services.s3.presigner.S3Presigner;
-import software.amazon.awssdk.services.s3.presigner.S3Presigner.Builder;
 
 /**
  * 
@@ -43,28 +40,32 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner.Builder;
  */
 public class S3ConnectionBuilder {
 
-  /** {@link AwsCredentials}. */
-  private AwsCredentials credentials;
-  /** S3 Region. */
-  private Region region;
   /** {@link S3ClientBuilder}. */
   private S3ClientBuilder builder;
-  /** Builder. */
-  private Builder presignerBuilder;
+  /** S3 Region. */
+  private Region region;
   /** {@link S3Client}. */
   private S3Client s3Client;
 
   /**
    * constructor.
+   * 
+   * @param enableAwsXray Enable AWS X-Ray
    */
-  public S3ConnectionBuilder() {
+  public S3ConnectionBuilder(final boolean enableAwsXray) {
     System.setProperty("software.amazon.awssdk.http.service.impl",
         "software.amazon.awssdk.http.urlconnection.UrlConnectionSdkHttpService");
     System.setProperty("aws.s3UseUsEast1RegionalEndpoint", "regional");
 
-    this.builder = S3Client.builder().httpClientBuilder(UrlConnectionHttpClient.builder())
+    ClientOverrideConfiguration.Builder clientConfig = ClientOverrideConfiguration.builder();
+
+    // if (enableAwsXray) {
+    // clientConfig.addExecutionInterceptor(new TracingInterceptor());
+    // }
+
+    this.builder = S3Client.builder().overrideConfiguration(clientConfig.build())
+        .httpClientBuilder(UrlConnectionHttpClient.builder())
         .credentialsProvider(EnvironmentVariableCredentialsProvider.create());
-    this.presignerBuilder = S3Presigner.builder();
   }
 
   /**
@@ -75,24 +76,6 @@ public class S3ConnectionBuilder {
   public S3Client build() {
     initS3Client();
     return this.s3Client;
-  }
-
-  /**
-   * Build {@link S3Presigner}.
-   * 
-   * @return {@link S3Presigner}s
-   */
-  public S3Presigner buildPresigner() {
-    return this.presignerBuilder.build();
-  }
-
-  /**
-   * Get {@link AwsCredentials}.
-   * 
-   * @return {@link AwsCredentials}
-   */
-  public AwsCredentials getCredentials() {
-    return this.credentials;
   }
 
   /**
@@ -120,9 +103,7 @@ public class S3ConnectionBuilder {
    * @return {@link S3ConnectionBuilder}
    */
   public S3ConnectionBuilder setCredentials(final AwsCredentialsProvider cred) {
-    this.credentials = cred.resolveCredentials();
     this.builder = this.builder.credentialsProvider(cred);
-    this.presignerBuilder = this.presignerBuilder.credentialsProvider(cred);
     return this;
   }
 
@@ -142,14 +123,11 @@ public class S3ConnectionBuilder {
   /**
    * Set Endpoint Override.
    * 
-   * @param endpoint {@link String}
+   * @param endpoint {@link URI}
    * @return {@link S3ConnectionBuilder}
-   * @throws URISyntaxException URISyntaxException
    */
-  public S3ConnectionBuilder setEndpointOverride(final String endpoint) throws URISyntaxException {
-    URI uri = new URI(endpoint);
-    this.builder = this.builder.endpointOverride(uri);
-    this.presignerBuilder = this.presignerBuilder.endpointOverride(uri);
+  public S3ConnectionBuilder setEndpointOverride(final URI endpoint) {
+    this.builder = this.builder.endpointOverride(endpoint);
     return this;
   }
 
@@ -162,7 +140,6 @@ public class S3ConnectionBuilder {
   public S3ConnectionBuilder setRegion(final Region r) {
     this.region = r;
     this.builder = this.builder.region(this.region);
-    this.presignerBuilder = this.presignerBuilder.region(this.region);
     return this;
   }
 }

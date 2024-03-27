@@ -24,21 +24,19 @@
 package com.formkiq.stacks.api.handler;
 
 import static com.formkiq.testutils.aws.DynamoDbExtension.DOCUMENTS_TABLE;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import java.io.IOException;
-import java.net.URISyntaxException;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
 import java.util.UUID;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import com.formkiq.aws.dynamodb.DynamicObject;
 import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
 import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilderExtension;
-import com.formkiq.aws.services.lambda.services.ConfigService;
 import com.formkiq.module.lambdaservices.AwsServiceCache;
-import com.formkiq.stacks.api.CoreAwsServiceCache;
+import com.formkiq.stacks.dynamodb.ConfigService;
+import com.formkiq.stacks.dynamodb.ConfigServiceExtension;
 import com.formkiq.testutils.aws.DynamoDbExtension;
 import com.formkiq.testutils.aws.DynamoDbTestServices;
 
@@ -54,24 +52,24 @@ public class DocumentsRestrictionsMaxContentLengthTest {
   private static DocumentsRestrictionsMaxContentLength service =
       new DocumentsRestrictionsMaxContentLength();
   /** {@link AwsServiceCache}. */
-  private AwsServiceCache awsservice;
+  private static AwsServiceCache awsservice;
 
   /**
-   * Before Tests.
+   * Before All.
    * 
-   * @throws URISyntaxException URISyntaxException
-   * @throws IOException IOException
+   * @throws Exception Exception
    */
-  @BeforeEach
-  public void before() throws URISyntaxException, IOException {
-    DynamoDbConnectionBuilder adb = DynamoDbTestServices.getDynamoDbConnection(null);
-
-    AwsServiceCache.register(DynamoDbConnectionBuilder.class,
-        new DynamoDbConnectionBuilderExtension(adb));
+  @BeforeAll
+  public static void beforeAll() throws Exception {
 
     Map<String, String> map = Map.of("DOCUMENTS_TABLE", DOCUMENTS_TABLE, "CACHE_TABLE", "",
         "APP_ENVIRONMENT", "unittest");
-    this.awsservice = new CoreAwsServiceCache().environment(map);
+    awsservice = new AwsServiceCache().environment(map);
+
+    DynamoDbConnectionBuilder adb = DynamoDbTestServices.getDynamoDbConnection();
+    awsservice.register(DynamoDbConnectionBuilder.class,
+        new DynamoDbConnectionBuilderExtension(adb));
+    awsservice.register(ConfigService.class, new ConfigServiceExtension());
   }
 
   /**
@@ -84,8 +82,8 @@ public class DocumentsRestrictionsMaxContentLengthTest {
     Long contentLength = null;
 
     // when
-    String value = service.getValue(this.awsservice, siteId);
-    boolean result = service.enforced(this.awsservice, siteId, value, contentLength);
+    String value = service.getValue(awsservice, siteId);
+    boolean result = service.enforced(awsservice, siteId, value, contentLength);
 
     // then
     assertFalse(result);
@@ -97,7 +95,7 @@ public class DocumentsRestrictionsMaxContentLengthTest {
   @Test
   public void testEnforced02() {
     // given
-    ConfigService configService = this.awsservice.getExtension(ConfigService.class);
+    ConfigService configService = awsservice.getExtension(ConfigService.class);
     Long contentLength = null;
     String siteId = UUID.randomUUID().toString();
 
@@ -106,8 +104,8 @@ public class DocumentsRestrictionsMaxContentLengthTest {
     configService.save(siteId, ob);
 
     // when
-    String value = service.getValue(this.awsservice, siteId);
-    boolean result = service.enforced(this.awsservice, siteId, value, contentLength);
+    String value = service.getValue(awsservice, siteId);
+    boolean result = service.enforced(awsservice, siteId, value, contentLength);
 
     // then
     assertTrue(result);
@@ -119,7 +117,7 @@ public class DocumentsRestrictionsMaxContentLengthTest {
   @Test
   public void testEnforced03() {
     // given
-    ConfigService configService = this.awsservice.getExtension(ConfigService.class);
+    ConfigService configService = awsservice.getExtension(ConfigService.class);
     Long contentLength = Long.valueOf("10");
     String siteId = UUID.randomUUID().toString();
 
@@ -128,8 +126,8 @@ public class DocumentsRestrictionsMaxContentLengthTest {
     configService.save(siteId, ob);
 
     // when
-    String value = service.getValue(this.awsservice, siteId);
-    boolean result = service.enforced(this.awsservice, siteId, value, contentLength);
+    String value = service.getValue(awsservice, siteId);
+    boolean result = service.enforced(awsservice, siteId, value, contentLength);
 
     // then
     assertFalse(result);
@@ -141,7 +139,7 @@ public class DocumentsRestrictionsMaxContentLengthTest {
   @Test
   public void testEnforced04() {
     // given
-    ConfigService configService = this.awsservice.getExtension(ConfigService.class);
+    ConfigService configService = awsservice.getExtension(ConfigService.class);
     Long contentLength = Long.valueOf("15");
     String siteId = UUID.randomUUID().toString();
 
@@ -150,8 +148,8 @@ public class DocumentsRestrictionsMaxContentLengthTest {
     configService.save(siteId, ob);
 
     // when
-    String value = service.getValue(this.awsservice, siteId);
-    boolean result = service.enforced(this.awsservice, siteId, value, contentLength);
+    String value = service.getValue(awsservice, siteId);
+    boolean result = service.enforced(awsservice, siteId, value, contentLength);
 
     // then
     assertTrue(result);
@@ -165,15 +163,15 @@ public class DocumentsRestrictionsMaxContentLengthTest {
     // given
     Long contentLength = Long.valueOf(0);
     String siteId = UUID.randomUUID().toString();
-    ConfigService configService = this.awsservice.getExtension(ConfigService.class);
+    ConfigService configService = awsservice.getExtension(ConfigService.class);
 
     DynamicObject ob = configService.get(siteId);
     ob.put(ConfigService.MAX_DOCUMENT_SIZE_BYTES, "10");
     configService.save(siteId, ob);
 
     // when
-    String value = service.getValue(this.awsservice, siteId);
-    boolean result = service.enforced(this.awsservice, siteId, value, contentLength);
+    String value = service.getValue(awsservice, siteId);
+    boolean result = service.enforced(awsservice, siteId, value, contentLength);
 
     // then
     assertTrue(result);

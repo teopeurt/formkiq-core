@@ -33,11 +33,13 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpRequest.Builder;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import com.formkiq.module.http.HttpHeaders;
 import com.formkiq.module.http.HttpService;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
@@ -60,19 +62,21 @@ public class HttpServiceSigv4 implements HttpService {
 
   /** {@link HttpClient}. */
   private HttpClient client;
-  /** {@link Region}. */
-  private Region signingRegion;
   /** {@link AwsCredentials}. */
   private AwsCredentials signingCredentials;
+  /** {@link Region}. */
+  private Region signingRegion;
 
   /**
    * constructor.
    * 
+   * @param httpClient {@link HttpClient}
    * @param region {@link Region}
    * @param awsCredentials {@link AwsCredentials}
    */
-  public HttpServiceSigv4(final Region region, final AwsCredentials awsCredentials) {
-    this.client = HttpClient.newHttpClient();
+  private HttpServiceSigv4(final HttpClient httpClient, final Region region,
+      final AwsCredentials awsCredentials) {
+    this.client = httpClient;
     this.signingRegion = region;
     this.signingCredentials = awsCredentials;
 
@@ -81,12 +85,72 @@ public class HttpServiceSigv4 implements HttpService {
     }
   }
 
+  /**
+   * constructor.
+   * 
+   * @param region {@link Region}
+   * @param awsCredentials {@link AwsCredentials}
+   */
+  public HttpServiceSigv4(final Region region, final AwsCredentials awsCredentials) {
+    this(HttpClient.newHttpClient(), region, awsCredentials);
+  }
+
+  /**
+   * constructor.
+   * 
+   * @param region {@link Region}
+   * @param awsCredentials {@link AwsCredentials}
+   * @param executor {@link Executor}
+   */
+  public HttpServiceSigv4(final Region region, final AwsCredentials awsCredentials,
+      final Executor executor) {
+    this(HttpClient.newBuilder().executor(executor).build(), region, awsCredentials);
+  }
+
+  /**
+   * Build a {@link SdkHttpFullRequest.Builder}.
+   * 
+   * @param uri URI
+   * @param method {@link SdkHttpMethod}
+   * @param headers {@link HttpHeaders}
+   * @param parameters {@link Map}
+   * @param payload {@link String}
+   * @return {@link SdkHttpFullRequest.Builder}
+   * @throws IOException IOException
+   */
+  private SdkHttpFullRequest.Builder buildRequest(final String uri, final SdkHttpMethod method,
+      final Optional<HttpHeaders> headers, final Optional<Map<String, String>> parameters,
+      final Optional<String> payload) throws IOException {
+
+    SdkHttpFullRequest.Builder requestBuilder =
+        SdkHttpFullRequest.builder().uri(toUri(uri)).method(method);
+
+    if (parameters.isPresent()) {
+      for (Map.Entry<String, String> e : parameters.get().entrySet()) {
+        requestBuilder.appendRawQueryParameter(e.getKey(), e.getValue());
+      }
+    }
+
+    if (headers.isPresent()) {
+      for (Map.Entry<String, String> e : headers.get().getAll().entrySet()) {
+        requestBuilder = requestBuilder.appendHeader(e.getKey(), e.getValue());
+      }
+    }
+
+    if (payload.isPresent()) {
+      StringContentStreamProvider provider = new StringContentStreamProvider(payload.get());
+      requestBuilder = requestBuilder.contentStreamProvider(provider);
+    }
+
+    return requestBuilder;
+  }
+
   @Override
-  public HttpResponse<String> delete(final String url, final Optional<HttpHeaders> headers)
-      throws IOException {
+  public HttpResponse<String> delete(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters) throws IOException {
 
     SdkHttpFullRequest.Builder request =
-        buildRequest(url, SdkHttpMethod.DELETE, headers, Optional.empty());
+        buildRequest(url, SdkHttpMethod.DELETE, headers, parameters, Optional.empty());
     SdkHttpFullRequest req = sign(request);
     return execute(req);
   }
@@ -136,6 +200,48 @@ public class HttpServiceSigv4 implements HttpService {
     }
   }
 
+  @Override
+  public HttpResponse<String> get(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters) throws IOException {
+    SdkHttpFullRequest.Builder request =
+        buildRequest(url, SdkHttpMethod.GET, headers, parameters, Optional.empty());
+    SdkHttpFullRequest req = sign(request);
+    return execute(req);
+  }
+
+  @Override
+  public HttpResponse<String> patch(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters, final String payload) throws IOException {
+    SdkHttpFullRequest.Builder request =
+        buildRequest(url, SdkHttpMethod.PATCH, headers, parameters, Optional.of(payload));
+    SdkHttpFullRequest req = sign(request);
+    return execute(req);
+  }
+
+  @Override
+  public HttpResponse<String> post(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters, final String payload) throws IOException {
+    SdkHttpFullRequest.Builder request =
+        buildRequest(url, SdkHttpMethod.POST, headers, parameters, Optional.of(payload));
+    SdkHttpFullRequest req = sign(request);
+    return execute(req);
+  }
+
+  @Override
+  public HttpResponse<String> put(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters, final Path payload) throws IOException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public HttpResponse<String> put(final String url, final Optional<HttpHeaders> headers,
+      final Optional<Map<String, String>> parameters, final String payload) throws IOException {
+    SdkHttpFullRequest.Builder request =
+        buildRequest(url, SdkHttpMethod.PUT, headers, parameters, Optional.of(payload));
+    SdkHttpFullRequest req = sign(request);
+    return execute(req);
+  }
+
   /**
    * AWS Signature Version 4 signing.
    * 
@@ -157,36 +263,6 @@ public class HttpServiceSigv4 implements HttpService {
   }
 
   /**
-   * Build a {@link SdkHttpFullRequest.Builder}.
-   * 
-   * @param uri URI
-   * @param method {@link SdkHttpMethod}
-   * @param headers {@link HttpHeaders}
-   * @param payload {@link String}
-   * @return {@link SdkHttpFullRequest.Builder}
-   * @throws IOException IOException
-   */
-  private SdkHttpFullRequest.Builder buildRequest(final String uri, final SdkHttpMethod method,
-      final Optional<HttpHeaders> headers, final Optional<String> payload) throws IOException {
-
-    SdkHttpFullRequest.Builder requestBuilder =
-        SdkHttpFullRequest.builder().uri(toUri(uri)).method(method);
-
-    if (headers.isPresent()) {
-      for (Map.Entry<String, String> e : headers.get().getAll().entrySet()) {
-        requestBuilder = requestBuilder.appendHeader(e.getKey(), e.getValue());
-      }
-    }
-
-    if (payload.isPresent()) {
-      StringContentStreamProvider provider = new StringContentStreamProvider(payload.get());
-      requestBuilder = requestBuilder.contentStreamProvider(provider);
-    }
-
-    return requestBuilder;
-  }
-
-  /**
    * Convert {@link String} to {@link URI}.
    * 
    * @param uri {@link String}
@@ -200,32 +276,4 @@ public class HttpServiceSigv4 implements HttpService {
       throw new IOException(e);
     }
   }
-
-  @Override
-  public HttpResponse<String> get(final String url, final Optional<HttpHeaders> headers)
-      throws IOException {
-    SdkHttpFullRequest.Builder request =
-        buildRequest(url, SdkHttpMethod.GET, headers, Optional.empty());
-    SdkHttpFullRequest req = sign(request);
-    return execute(req);
-  }
-
-  @Override
-  public HttpResponse<String> patch(final String url, final Optional<HttpHeaders> headers,
-      final String payload) throws IOException {
-    SdkHttpFullRequest.Builder request =
-        buildRequest(url, SdkHttpMethod.PATCH, headers, Optional.of(payload));
-    SdkHttpFullRequest req = sign(request);
-    return execute(req);
-  }
-
-  @Override
-  public HttpResponse<String> post(final String url, final Optional<HttpHeaders> headers,
-      final String payload) throws IOException {
-    SdkHttpFullRequest.Builder request =
-        buildRequest(url, SdkHttpMethod.POST, headers, Optional.of(payload));
-    SdkHttpFullRequest req = sign(request);
-    return execute(req);
-  }
-
 }

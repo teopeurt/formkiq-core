@@ -24,21 +24,35 @@
 package com.formkiq.testutils.aws;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandlers;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.containers.localstack.LocalStackContainer.Service;
 import org.testcontainers.utility.DockerImageName;
 import com.formkiq.aws.s3.S3ConnectionBuilder;
+import com.formkiq.aws.s3.S3PresignerConnectionBuilder;
 import com.formkiq.aws.sns.SnsConnectionBuilder;
+import com.formkiq.aws.sns.SnsService;
 import com.formkiq.aws.sqs.SqsConnectionBuilder;
 import com.formkiq.aws.sqs.SqsService;
+import com.formkiq.aws.sqs.SqsServiceImpl;
 import com.formkiq.aws.ssm.SsmConnectionBuilder;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
 
 /**
  * 
@@ -57,13 +71,15 @@ public final class TestServices {
   public static final String FORMKIQ_APP_ENVIRONMENT = "test";
   /** {@link LocalStackContainer}. */
   private static LocalStackContainer localstack = null;
-  /** Default Localstack Endpoint. */
-  private static final String LOCALSTACK_ENDPOINT = "http://localhost:" + DEFAULT_LOCALSTACK_PORT;
   /** LocalStack {@link DockerImageName}. */
   private static final DockerImageName LOCALSTACK_IMAGE =
-      DockerImageName.parse("localstack/localstack:0.12.2");
+      DockerImageName.parse("localstack/localstack:2.1");
+  /** {@link String}. */
+  public static final String OCR_BUCKET_NAME = "ocrbucket";
   /** {@link S3ConnectionBuilder}. */
   private static S3ConnectionBuilder s3Connection;
+  /** {@link S3PresignerConnectionBuilder}. */
+  private static S3PresignerConnectionBuilder s3PresignerConnection;
   /** {@link SnsConnectionBuilder}. */
   private static SnsConnectionBuilder snsConnection;
   /** SQS Document Formats Queue. */
@@ -84,21 +100,97 @@ public final class TestServices {
   public static final String STAGE_BUCKET_NAME = "stagebucket";
 
   /**
+   * Clear SQS Queue.
+   * 
+   * @param queueUrl {@link String}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static void clearSqsQueue(final String queueUrl) throws URISyntaxException {
+    SqsService sqsService = new SqsServiceImpl(getSqsConnection(null));
+    ReceiveMessageResponse response = sqsService.receiveMessages(queueUrl);
+    while (!response.messages().isEmpty()) {
+      for (Message msg : response.messages()) {
+        sqsService.deleteMessage(queueUrl, msg.receiptHandle());
+      }
+
+      response = sqsService.receiveMessages(queueUrl);
+    }
+  }
+
+  /**
+   * Create Random Sns Topic.
+   * 
+   * @return {@link String}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static String createSnsTopic() throws URISyntaxException {
+    SnsService snsService = new SnsService(getSnsConnection(null));
+    return snsService.createTopic("sns_" + UUID.randomUUID()).topicArn();
+  }
+
+  /**
+   * Create a random SQS queue and subscribes to an SNS Topic.
+   * 
+   * @param snsTopicArn {@link String}
+   * @return {@link String}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static String createSqsSubscriptionToSnsTopic(final String snsTopicArn)
+      throws URISyntaxException {
+    SqsService sqsService = new SqsServiceImpl(getSqsConnection(null));
+    SnsService snsService = new SnsService(getSnsConnection(null));
+    String queueUrl = sqsService.createQueue("sqs_" + UUID.randomUUID()).queueUrl();
+    String sqsQueueArn = sqsService.getQueueArn(queueUrl);
+    snsService.subscribe(snsTopicArn, "sqs", sqsQueueArn);
+    return queueUrl;
+  }
+
+  private static String getDefaultLocalStackEndpoint(final Service service) {
+    String url = "http://localhost:" + DEFAULT_LOCALSTACK_PORT;
+    if (Service.S3.equals(service)) {
+      url = "http://s3.localhost:" + DEFAULT_LOCALSTACK_PORT;
+    } else if (Service.SQS.equals(service)) {
+      url = "http://sqs.localhost:" + DEFAULT_LOCALSTACK_PORT;
+    }
+
+    return url;
+  }
+
+  /**
    * Get Local Stack Endpoint.
    * 
    * @param service {@link Service}
-   * @param endpointOverride {@link String}
-   * @return {@link String}
+   * @param endpointOverride {@link URI}
+   * @return {@link URI}
    */
-  private static String getEndpoint(final Service service, final String endpointOverride) {
-    String endpoint = endpointOverride;
+  public static URI getEndpoint(final Service service, final URI endpointOverride) {
+    URI endpoint = endpointOverride;
 
     if (endpoint == null) {
-      endpoint = localstack != null ? localstack.getEndpointOverride(service).toString()
-          : LOCALSTACK_ENDPOINT;
+      try {
+        endpoint = new URI(localstack != null ? localstack.getEndpointOverride(service).toString()
+            : getDefaultLocalStackEndpoint(service));
+      } catch (URISyntaxException e) {
+        throw new RuntimeException(e);
+      }
     }
 
     return endpoint;
+  }
+
+  /**
+   * Get AWS Services Endpoint Map.
+   * 
+   * @return {@link Map}
+   */
+  public static Map<String, URI> getEndpointMap() {
+    Map<String, URI> endpoints = Map.of("dynamodb", DynamoDbTestServices.getEndpoint(), "s3",
+        TestServices.getEndpoint(Service.S3, null), "s3presigner",
+        TestServices.getEndpoint(Service.S3, null), "ssm",
+        TestServices.getEndpoint(Service.SSM, null), "sqs",
+        TestServices.getEndpoint(Service.SQS, null), "sns",
+        TestServices.getEndpoint(Service.SNS, null));
+    return endpoints;
   }
 
   /**
@@ -110,24 +202,37 @@ public final class TestServices {
    */
   public static URI getEndpointOverride(final Service service) throws URISyntaxException {
     return localstack != null ? localstack.getEndpointOverride(service)
-        : new URI(LOCALSTACK_ENDPOINT);
+        : new URI(getDefaultLocalStackEndpoint(service));
+  }
+
+  /**
+   * Get Messages from SQS queue.
+   * 
+   * @param queueUrl {@link String}
+   * @return {@link List}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static List<Message> getMessagesFromSqs(final String queueUrl) throws URISyntaxException {
+    SqsService sqsService = new SqsServiceImpl(getSqsConnection(null));
+    List<Message> msgs = sqsService.receiveMessages(queueUrl).messages();
+    return msgs;
   }
 
   /**
    * Get Singleton {@link S3ConnectionBuilder}.
    * 
-   * @param endpointOverride {@link String}
+   * @param endpointOverride {@link URI}
    * 
    * @return {@link S3ConnectionBuilder}
    * @throws URISyntaxException URISyntaxException
    */
-  public static synchronized S3ConnectionBuilder getS3Connection(final String endpointOverride)
+  public static synchronized S3ConnectionBuilder getS3Connection(final URI endpointOverride)
       throws URISyntaxException {
     if (s3Connection == null) {
       AwsCredentialsProvider cred = StaticCredentialsProvider
           .create(AwsSessionCredentials.create("ACCESSKEY", "SECRETKEY", "TOKENKEY"));
 
-      s3Connection = new S3ConnectionBuilder().setCredentials(cred).setRegion(AWS_REGION)
+      s3Connection = new S3ConnectionBuilder(false).setCredentials(cred).setRegion(AWS_REGION)
           .setEndpointOverride(getEndpoint(Service.S3, endpointOverride));
     }
 
@@ -135,20 +240,41 @@ public final class TestServices {
   }
 
   /**
+   * Get Singleton {@link S3PresignerConnectionBuilder}.
+   * 
+   * @param endpointOverride {@link URI}
+   * 
+   * @return {@link S3ConnectionBuilder}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static synchronized S3PresignerConnectionBuilder getS3PresignerConnection(
+      final URI endpointOverride) throws URISyntaxException {
+    if (s3PresignerConnection == null) {
+      AwsCredentialsProvider cred = StaticCredentialsProvider
+          .create(AwsSessionCredentials.create("ACCESSKEY", "SECRETKEY", "TOKENKEY"));
+
+      s3PresignerConnection = new S3PresignerConnectionBuilder().setCredentials(cred)
+          .setRegion(AWS_REGION).setEndpointOverride(getEndpoint(Service.S3, endpointOverride));
+    }
+
+    return s3PresignerConnection;
+  }
+
+  /**
    * Get Singleton {@link SnsConnectionBuilder}.
    * 
-   * @param endpointOverride {@link String}
+   * @param endpointOverride {@link URI}
    * 
    * @return {@link SqsConnectionBuilder}
    * @throws URISyntaxException URISyntaxException
    */
-  public static synchronized SnsConnectionBuilder getSnsConnection(final String endpointOverride)
+  public static synchronized SnsConnectionBuilder getSnsConnection(final URI endpointOverride)
       throws URISyntaxException {
     if (snsConnection == null) {
       AwsCredentialsProvider cred = StaticCredentialsProvider
           .create(AwsSessionCredentials.create("ACCESSKEY", "SECRETKEY", "TOKENKEY"));
 
-      snsConnection = new SnsConnectionBuilder().setCredentials(cred).setRegion(AWS_REGION)
+      snsConnection = new SnsConnectionBuilder(false).setCredentials(cred).setRegion(AWS_REGION)
           .setEndpointOverride(getEndpoint(Service.SNS, endpointOverride));
     }
 
@@ -158,18 +284,18 @@ public final class TestServices {
   /**
    * Get Singleton {@link SqsConnectionBuilder}.
    * 
-   * @param endpointOverride {@link String}
+   * @param endpointOverride {@link URI}
    * 
    * @return {@link SqsConnectionBuilder}
    * @throws URISyntaxException URISyntaxException
    */
-  public static synchronized SqsConnectionBuilder getSqsConnection(final String endpointOverride)
+  public static synchronized SqsConnectionBuilder getSqsConnection(final URI endpointOverride)
       throws URISyntaxException {
     if (sqsConnection == null) {
       AwsCredentialsProvider cred = StaticCredentialsProvider
           .create(AwsSessionCredentials.create("ACCESSKEY", "SECRETKEY", "TOKENKEY"));
 
-      sqsConnection = new SqsConnectionBuilder().setCredentials(cred).setRegion(AWS_REGION)
+      sqsConnection = new SqsConnectionBuilder(false).setCredentials(cred).setRegion(AWS_REGION)
           .setEndpointOverride(getEndpoint(Service.SQS, endpointOverride));
     }
 
@@ -204,7 +330,7 @@ public final class TestServices {
   public static synchronized SqsService getSqsService(final SqsConnectionBuilder sqs)
       throws URISyntaxException {
     if (sqsservice == null) {
-      sqsservice = new SqsService(sqs);
+      sqsservice = new SqsServiceImpl(sqs);
     }
 
     return sqsservice;
@@ -230,18 +356,18 @@ public final class TestServices {
   /**
    * Get Singleton {@link SsmConnectionBuilder}.
    * 
-   * @param endpointOverride {@link String}
+   * @param endpointOverride {@link URI}
    * 
    * @return {@link SsmConnectionBuilder}
    * @throws URISyntaxException URISyntaxException
    */
-  public static synchronized SsmConnectionBuilder getSsmConnection(final String endpointOverride)
+  public static synchronized SsmConnectionBuilder getSsmConnection(final URI endpointOverride)
       throws URISyntaxException {
     if (ssmConnection == null) {
       AwsCredentialsProvider cred = StaticCredentialsProvider
           .create(AwsSessionCredentials.create("ACCESSKEY", "SECRETKEY", "TOKENKEY"));
 
-      ssmConnection = new SsmConnectionBuilder().setCredentials(cred).setRegion(AWS_REGION)
+      ssmConnection = new SsmConnectionBuilder(false).setCredentials(cred).setRegion(AWS_REGION)
           .setEndpointOverride(getEndpoint(Service.SSM, endpointOverride));
     }
 
@@ -254,12 +380,21 @@ public final class TestServices {
    * @return boolean
    */
   private static boolean isPortAvailable() {
-    boolean available;
-    try (ServerSocket ignored = new ServerSocket(DEFAULT_LOCALSTACK_PORT)) {
+
+    boolean available = false;
+    final int status200 = 200;
+
+    HttpClient client = HttpClient.newHttpClient();
+    try {
+      HttpRequest request = HttpRequest.newBuilder().timeout(Duration.ofSeconds(2))
+          .uri(new URI("http://localhost:" + DEFAULT_LOCALSTACK_PORT + "/_localstack/health")).GET()
+          .build();
+      HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
+      available = response.statusCode() != status200;
+    } catch (URISyntaxException | IOException | InterruptedException e) {
       available = true;
-    } catch (IOException e) {
-      available = false;
     }
+
     return available;
   }
 
@@ -283,6 +418,32 @@ public final class TestServices {
     if (localstack != null) {
       localstack.stop();
     }
+  }
+
+  /**
+   * Get Messages from SQS queue.
+   * 
+   * @param queueUrl {@link String}
+   * @return {@link List}
+   * @throws URISyntaxException URISyntaxException
+   */
+  public static List<Message> waitForMessagesFromSqs(final String queueUrl)
+      throws URISyntaxException {
+
+    SqsService sqsService = new SqsServiceImpl(getSqsConnection(null));
+    List<Message> msgs = Collections.emptyList();
+
+    while (msgs.isEmpty()) {
+      msgs = sqsService.receiveMessages(queueUrl).messages();
+      if (msgs.isEmpty()) {
+        try {
+          TimeUnit.SECONDS.sleep(1);
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        }
+      }
+    }
+    return msgs;
   }
 
   private TestServices() {}

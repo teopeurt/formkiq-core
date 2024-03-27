@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -49,6 +50,7 @@ import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -65,6 +67,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import com.formkiq.aws.dynamodb.DbKeys;
 import com.formkiq.aws.dynamodb.DynamoDbConnectionBuilder;
 import com.formkiq.aws.dynamodb.PaginationMapToken;
+import com.formkiq.aws.dynamodb.PaginationResult;
 import com.formkiq.aws.dynamodb.PaginationResults;
 import com.formkiq.aws.dynamodb.model.DocumentItem;
 import com.formkiq.aws.dynamodb.model.DocumentMetadata;
@@ -74,6 +77,7 @@ import com.formkiq.aws.dynamodb.model.DynamicDocumentItem;
 import com.formkiq.aws.dynamodb.model.SearchMetaCriteria;
 import com.formkiq.aws.dynamodb.model.SearchQuery;
 import com.formkiq.aws.dynamodb.model.SearchTagCriteria;
+import com.formkiq.aws.dynamodb.objects.DateUtil;
 import com.formkiq.testutils.aws.DynamoDbExtension;
 import com.formkiq.testutils.aws.DynamoDbTestServices;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -90,6 +94,8 @@ public class DocumentServiceImplTest implements DbKeys {
   private static DocumentSearchService searchService;
   /** {@link DocumentService}. */
   private static DocumentService service;
+  /** {@link FolderIndexProcessor}. */
+  private static FolderIndexProcessor folderIndexProcessor;
 
   /**
    * Before Test.
@@ -99,11 +105,12 @@ public class DocumentServiceImplTest implements DbKeys {
   @BeforeAll
   public static void beforeAll() throws Exception {
 
-    DynamoDbConnectionBuilder dynamoDbConnection = DynamoDbTestServices.getDynamoDbConnection(null);
+    DynamoDbConnectionBuilder dynamoDbConnection = DynamoDbTestServices.getDynamoDbConnection();
     service = new DocumentServiceImpl(dynamoDbConnection, DOCUMENTS_TABLE,
         new DocumentVersionServiceNoVersioning());
     searchService =
         new DocumentSearchServiceImpl(dynamoDbConnection, service, DOCUMENTS_TABLE, null);
+    folderIndexProcessor = new FolderIndexProcessorImpl(dynamoDbConnection, DOCUMENTS_TABLE);
   }
 
   /** {@link SimpleDateFormat}. */
@@ -366,6 +373,75 @@ public class DocumentServiceImplTest implements DbKeys {
     }
   }
 
+  /**
+   * Add a tag to a lot of documents.
+   */
+  @Test
+  void testAddTags05() {
+    // given
+    final int count = 200;
+    final String tagKey = "category123";
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+
+      Map<String, Collection<DocumentTag>> tagMap = new HashMap<>();
+
+      for (int i = 0; i < count; i++) {
+        String documentId = UUID.randomUUID().toString();
+        List<DocumentTag> tags = Arrays.asList(new DocumentTag(documentId, tagKey, "person",
+            new Date(), "joe", DocumentTagType.USERDEFINED));
+
+        tagMap.put(documentId, tags);
+      }
+
+      // when
+      service.addTags(siteId, tagMap, null);
+
+      // then
+      for (String documentId : tagMap.keySet()) {
+        PaginationResults<DocumentTag> results =
+            service.findDocumentTags(siteId, documentId, null, MAX_RESULTS);
+        assertEquals(1, results.getResults().size());
+        assertEquals(tagKey, results.getResults().get(0).getKey());
+        assertEquals("person", results.getResults().get(0).getValue());
+      }
+
+      SearchQuery query = new SearchQuery().meta(new SearchMetaCriteria().indexType("tags"));
+      PaginationResults<DynamicDocumentItem> results =
+          searchService.search(siteId, query, null, MAX_RESULTS);
+      assertEquals(1, results.getResults().size());
+      assertEquals(tagKey, results.getResults().get(0).get("value"));
+    }
+  }
+
+  /**
+   * Test add Tag with Values then change to Value.
+   */
+  @Test
+  void testAddTags06() {
+    // given
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+
+      String documentId = UUID.randomUUID().toString();
+
+      List<DocumentTag> tags0 = Arrays.asList(new DocumentTag(null, "category",
+          Arrays.asList("person1", "person2"), new Date(), "joe", DocumentTagType.USERDEFINED));
+
+      List<DocumentTag> tags1 = Arrays.asList(new DocumentTag(null, "category", "person0",
+          new Date(), "joe", DocumentTagType.USERDEFINED));
+
+      // when
+      service.addTags(siteId, documentId, tags0, null);
+      service.addTags(siteId, documentId, tags1, null);
+
+      // then
+      PaginationResults<DocumentTag> results =
+          service.findDocumentTags(siteId, documentId, null, MAX_RESULTS);
+      assertEquals(1, results.getResults().size());
+      assertEquals("category", results.getResults().get(0).getKey());
+      assertEquals("person0", results.getResults().get(0).getValue());
+    }
+  }
+
   /** Delete Document. */
   @Test
   public void testDeleteDocument01() {
@@ -373,34 +449,159 @@ public class DocumentServiceImplTest implements DbKeys {
       // given
       Date now = new Date();
       String userId = "jsmith";
+
+      for (boolean softDelete : Arrays.asList(Boolean.FALSE, Boolean.TRUE)) {
+
+        DocumentItem item = new DocumentItemDynamoDb(UUID.randomUUID().toString(), now, userId);
+        item.setPath("a/test.txt");
+        String documentId = item.getDocumentId();
+
+        DocumentTag tag = new DocumentTag(null, "status", "active", now, userId);
+        tag.setUserId(UUID.randomUUID().toString());
+
+        service.saveDocument(siteId, item, Arrays.asList(tag));
+
+        PaginationResults<DocumentTag> results =
+            service.findDocumentTags(siteId, documentId, null, MAX_RESULTS);
+        assertEquals(1, results.getResults().size());
+
+        // when
+        service.deleteDocument(siteId, documentId, softDelete);
+
+        // then
+        assertNull(service.findDocument(siteId, documentId));
+
+        results = service.findDocumentTags(siteId, documentId, null, MAX_RESULTS);
+        assertEquals(0, results.getResults().size());
+
+        SearchQuery q = new SearchQuery().meta(new SearchMetaCriteria().folder(""));
+        PaginationResults<DynamicDocumentItem> folders =
+            searchService.search(siteId, q, null, MAX_RESULTS);
+        assertEquals(1, folders.getResults().size());
+
+        q = new SearchQuery().meta(new SearchMetaCriteria().folder("a"));
+        folders = searchService.search(siteId, q, null, MAX_RESULTS);
+
+        assertEquals(0, folders.getResults().size());
+      }
+    }
+  }
+
+  /**
+   * Delete / restore Document.
+   * 
+   * @throws IOException IOException
+   */
+  @Test
+  public void testDeleteDocument02() throws IOException {
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      final int tagCount = 200;
+      Date now = new Date();
+      String userId = "jsmith";
+
       DocumentItem item = new DocumentItemDynamoDb(UUID.randomUUID().toString(), now, userId);
       item.setPath("a/test.txt");
-      final String documentId = item.getDocumentId();
+      String documentId = item.getDocumentId();
+
+      List<DocumentTag> tags = new ArrayList<>();
+
+      for (int i = 0; i < tagCount; i++) {
+        DocumentTag tag = new DocumentTag(null, "status_" + i, "active", now, userId);
+        tag.setUserId(UUID.randomUUID().toString());
+        tags.add(tag);
+      }
+
+      service.saveDocument(siteId, item, tags);
+      assertNotNull(service.findDocument(siteId, documentId));
+      assertFalse(
+          service.findDocumentTags(siteId, documentId, null, tagCount).getResults().isEmpty());
+
+      boolean softDelete = true;
+
+      // when
+      assertTrue(service.deleteDocument(siteId, documentId, softDelete));
+
+      // then
+      assertNull(service.findDocument(siteId, documentId));
+      assertTrue(
+          service.findDocumentTags(siteId, documentId, null, tagCount).getResults().isEmpty());
+
+      List<DocumentItem> results =
+          service.findSoftDeletedDocuments(siteId, null, tagCount).getResults();
+      assertEquals(documentId, results.get(0).getDocumentId());
+
+      // when
+      assertTrue(service.restoreSoftDeletedDocument(siteId, documentId));
+
+      // then
+      results = service.findSoftDeletedDocuments(siteId, null, tagCount).getResults();
+      assertEquals(0, results.size());
+
+      assertNotNull(service.findDocument(siteId, documentId));
+
+      Map<String, String> map = folderIndexProcessor.getIndex(siteId, item.getPath());
+      assertEquals("test.txt", map.get("path"));
+
+      assertEquals(tagCount,
+          service.findDocumentTags(siteId, documentId, null, tagCount).getResults().size());
+    }
+  }
+
+  /**
+   * Delete Soft then Delete Document.
+   * 
+   * @throws IOException IOException
+   */
+  @Test
+  public void testDeleteDocument03() throws IOException {
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      Date now = new Date();
+      String userId = "jsmith";
+
+      DocumentItem item = new DocumentItemDynamoDb(UUID.randomUUID().toString(), now, userId);
+      item.setPath("a/test52.txt");
+      String documentId = item.getDocumentId();
 
       DocumentTag tag = new DocumentTag(null, "status", "active", now, userId);
       tag.setUserId(UUID.randomUUID().toString());
 
       service.saveDocument(siteId, item, Arrays.asList(tag));
 
+      assertNotNull(service.findDocument(siteId, documentId));
+      assertEquals(1,
+          service.findDocumentTags(siteId, documentId, null, MAX_RESULTS).getResults().size());
+
+      boolean softDelete = true;
+
       // when
-      service.deleteDocument(siteId, documentId);
+      assertTrue(service.deleteDocument(siteId, documentId, softDelete));
 
       // then
       assertNull(service.findDocument(siteId, documentId));
+      assertEquals(0,
+          service.findDocumentTags(siteId, documentId, null, MAX_RESULTS).getResults().size());
 
-      PaginationResults<DocumentTag> results =
-          service.findDocumentTags(siteId, documentId, null, MAX_RESULTS);
-      assertEquals(0, results.getResults().size());
+      List<DocumentItem> results =
+          service.findSoftDeletedDocuments(siteId, null, MAX_RESULTS).getResults();
+      assertEquals(documentId, results.get(0).getDocumentId());
 
-      SearchQuery q = new SearchQuery().meta(new SearchMetaCriteria().folder(""));
-      PaginationResults<DynamicDocumentItem> folders =
-          searchService.search(siteId, q, null, MAX_RESULTS);
-      assertEquals(1, folders.getResults().size());
+      // given
+      softDelete = false;
 
-      q = new SearchQuery().meta(new SearchMetaCriteria().folder("a"));
-      folders = searchService.search(siteId, q, null, MAX_RESULTS);
+      // when
+      assertTrue(service.deleteDocument(siteId, documentId, softDelete));
 
-      assertEquals(0, folders.getResults().size());
+      // then
+      results = service.findSoftDeletedDocuments(siteId, null, MAX_RESULTS).getResults();
+      assertEquals(0, results.size());
+
+      assertNull(service.findDocument(siteId, documentId));
+      assertEquals(0,
+          service.findDocumentTags(siteId, documentId, null, MAX_RESULTS).getResults().size());
     }
   }
 
@@ -491,7 +692,7 @@ public class DocumentServiceImplTest implements DbKeys {
       // then
       assertEquals(doc.getDocumentId(), result.getResult().getDocumentId());
       documents = result.getResult().getDocuments();
-      assertNull(documents);
+      assertTrue(documents.isEmpty());
       assertNull(result.getToken());
 
       assertEquals(2, list.size());
@@ -1677,7 +1878,7 @@ public class DocumentServiceImplTest implements DbKeys {
       GetItemRequest r = GetItemRequest.builder().key(keysDocument(siteId, item.getDocumentId()))
           .tableName(DOCUMENTS_TABLE).build();
 
-      try (DynamoDbClient dbClient = DynamoDbTestServices.getDynamoDbConnection(null).build()) {
+      try (DynamoDbClient dbClient = DynamoDbTestServices.getDynamoDbConnection().build()) {
 
         Map<String, AttributeValue> result = dbClient.getItem(r).item();
         assertEquals(ttl, result.get("TimeToLive").n());
@@ -1780,8 +1981,84 @@ public class DocumentServiceImplTest implements DbKeys {
 
       PaginationResults<DocumentTag> tags =
           service.findDocumentTags(siteId, item.getDocumentId(), null, MAX_RESULTS);
-      assertEquals(1, tags.getResults().size());
+      assertEquals(2, tags.getResults().size());
       assertEquals("path", tags.getResults().get(0).getKey());
+      assertEquals("userId", tags.getResults().get(1).getKey());
+    }
+  }
+
+  /**
+   * Test Save {@link DocumentItem} with null {@link DocumentTag}.
+   */
+  @Test
+  public void testSaveDocumentItemWithTag09() {
+    final int year = Calendar.getInstance().get(Calendar.YEAR);
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      Date now = new Date();
+      String content = "This is a test";
+      String username = UUID.randomUUID() + "@formkiq.com";
+
+      DynamicDocumentItem doc = new DynamicDocumentItem(Map.of("documentId",
+          UUID.randomUUID().toString(), "userId", username, "insertedDate", new Date(), "content",
+          Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8))));
+      doc.put("tags", Arrays.asList(
+          Map.of("documentId", doc.getDocumentId(), "insertedDate", now, "userId", username)));
+
+      // when
+      DocumentItem item = service.saveDocumentItemWithTag(siteId, doc);
+
+      // then
+      item = service.findDocument(siteId, item.getDocumentId());
+      assertNotNull(item);
+
+      ZoneId timeZone = ZoneId.systemDefault();
+      LocalDate lastModifiedDate =
+          item.getLastModifiedDate().toInstant().atZone(timeZone).toLocalDate();
+      assertEquals(year, lastModifiedDate.get(ChronoField.YEAR_OF_ERA));
+
+      PaginationResults<DocumentTag> tags =
+          service.findDocumentTags(siteId, item.getDocumentId(), null, MAX_RESULTS);
+      assertEquals(1, tags.getResults().size());
+      assertEquals("untagged", tags.getResults().get(0).getKey());
+      assertEquals("true", tags.getResults().get(0).getValue());
+      assertEquals(DocumentTagType.SYSTEMDEFINED, tags.getResults().get(0).getType());
+      assertEquals(username, tags.getResults().get(0).getUserId());
+      assertEquals(item.getDocumentId(), tags.getResults().get(0).getDocumentId());
+      assertNotNull(tags.getResults().get(0).getInsertedDate());
+    }
+  }
+
+  /**
+   * Test Save case insensitive tag keys.
+   */
+  @Test
+  public void testSaveDocumentItemWithTag10() {
+
+    for (String siteId : Arrays.asList(null, UUID.randomUUID().toString())) {
+      // given
+      String username = UUID.randomUUID() + "@formkiq.com";
+      String documentId = UUID.randomUUID().toString();
+
+      List<String> tagKeys = Arrays.asList("filetype", "fileType");
+
+      DynamicDocumentItem doc = new DynamicDocumentItem(new HashMap<>());
+      doc.put("documentId", documentId);
+      List<Map<String, Object>> taglist = new ArrayList<>();
+
+      for (String tagKey : tagKeys) {
+        taglist.add(Map.of("documentId", documentId, "key", tagKey, "value", "test", "insertedDate",
+            new Date(), "userId", username, "type", DocumentTagType.USERDEFINED.name()));
+      }
+
+      doc.put("tags", taglist);
+
+      // when
+      DocumentItem item = service.saveDocumentItemWithTag(siteId, doc);
+
+      // then
+      item = service.findDocument(siteId, item.getDocumentId());
+      assertNotNull(item);
     }
   }
 
@@ -1932,10 +2209,11 @@ public class DocumentServiceImplTest implements DbKeys {
       smc = new SearchMetaCriteria().folder("a");
       q = new SearchQuery().meta(smc);
       items = searchService.search(siteId, q, null, MAX_RESULTS);
+
       assertEquals(1, items.getResults().size());
       result = items.getResults().get(0);
       assertEquals("b", result.get("path"));
-      assertEquals(item1Date, result.getLastModifiedDate());
+      assertNotEquals(item1Date, result.getLastModifiedDate());
 
       smc = new SearchMetaCriteria().folder("a/b");
       q = new SearchQuery().meta(smc);

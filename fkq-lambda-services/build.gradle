@@ -2,10 +2,10 @@
 description = "FormKiQ Lambda Services"
 
 dependencies {
+	implementation group: 'software.amazon.awssdk', name: 'auth', version: '2.20.140'
 }
 
 test {
   failFast = true
-  useJUnitPlatform()
-  exclude 'com/formkiq/module/lambdaservices/awstest/**'  
+  useJUnitPlatform()  
 }
